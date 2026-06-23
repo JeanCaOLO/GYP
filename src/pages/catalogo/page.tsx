@@ -111,6 +111,45 @@ export default function CatalogoPage() {
     inactivas: items.filter((i) => !i.activa).length,
   };
 
+  // --- DESCARGAR PLANTILLA ---
+  const handleDownloadTemplate = async () => {
+    try {
+      const xlsx = await import('xlsx');
+      const headers = [
+        'Linea',
+        'Grupo',
+        'Cuenta',
+        'Descripción',
+        'Saldo Normal',
+        'Comercializadora',
+        'Balance / GyP',
+        'Clasificación',
+        'Clasificación 1',
+        'Clasificación 2',
+        'Orden Clasificacion',
+        'Organización',
+        'País',
+        'Compañía',
+        'Centro de Costo',
+      ];
+      const ws = xlsx.utils.aoa_to_sheet([headers]);
+      const wb = xlsx.utils.book_new();
+      xlsx.utils.book_append_sheet(wb, ws, 'Catalogo GYP');
+      const wbout = xlsx.write(wb, { bookType: 'xlsx', type: 'array' });
+      const blob = new Blob([wbout], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = 'Plantilla_Catalogo_GYP.xlsx';
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      addToast('error', 'Error al generar plantilla: ' + (err as Error).message);
+    }
+  };
+
   // --- CARGADOR DE EXCEL ---
   const handleImportExcel = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -228,6 +267,17 @@ export default function CatalogoPage() {
             'ORDER',
           );
 
+          // Ubicación: buscar por nombre o código
+          const orgNombre = String(getVal(row, 'Organización', 'Organizacion', 'organizacion', 'ORGANIZACION', 'Org', 'ORG') || '').trim();
+          const paisNombre = String(getVal(row, 'País', 'Pais', 'pais', 'PAIS', 'País', 'Country', 'COUNTRY') || '').trim();
+          const ciaNombre = String(getVal(row, 'Compañía', 'Compania', 'compania', 'COMPANIA', 'Cía', 'CIA', 'Cia', 'Company', 'COMPANY') || '').trim();
+          const ccNombre = String(getVal(row, 'Centro de Costo', 'Centro Costo', 'centro_costo', 'CENTRO_COSTO', 'CC', 'cc', 'Cost Center', 'COST_CENTER') || '').trim();
+
+          const orgId = orgNombre ? (organizaciones.find((o) => o.nombre.toLowerCase() === orgNombre.toLowerCase() || o.codigo.toLowerCase() === orgNombre.toLowerCase())?.id || null) : null;
+          const paisId = paisNombre ? (paises.find((p) => p.nombre.toLowerCase() === paisNombre.toLowerCase() || p.codigo.toLowerCase() === paisNombre.toLowerCase())?.id || null) : null;
+          const ciaId = ciaNombre ? (companias.find((c) => c.nombre.toLowerCase() === ciaNombre.toLowerCase() || c.codigo.toLowerCase() === ciaNombre.toLowerCase())?.id || null) : null;
+          const ccId = ccNombre ? (centrosCostos.find((cc) => cc.nombre.toLowerCase() === ccNombre.toLowerCase() || cc.codigo.toLowerCase() === ccNombre.toLowerCase())?.id || null) : null;
+
           return {
             linea: lineaRaw !== '' ? Number(lineaRaw) : null,
             grupo: grupoRaw !== '' ? Number(grupoRaw) : null,
@@ -241,6 +291,10 @@ export default function CatalogoPage() {
             clasificacion_2: clasificacion2,
             orden_clasificacion: ordenRaw !== '' ? Number(ordenRaw) : null,
             activa: true,
+            ...(orgId ? { organizacion_id: orgId } : {}),
+            ...(paisId ? { pais_id: paisId } : {}),
+            ...(ciaId ? { compania_id: ciaId } : {}),
+            ...(ccId ? { centro_costo_id: ccId } : {}),
           };
         })
         .filter(Boolean) as Record<string, unknown>[];
@@ -388,6 +442,13 @@ export default function CatalogoPage() {
         <div className="flex gap-2">
           {canWrite && (
             <>
+              <button
+                onClick={handleDownloadTemplate}
+                className="inline-flex items-center gap-2 rounded-lg border border-slate-300 bg-white px-4 py-2.5 text-sm font-medium text-slate-700 hover:bg-slate-50 transition-colors whitespace-nowrap"
+              >
+                <i className="ri-download-line w-5 h-5 flex items-center justify-center"></i>
+                Descargar Plantilla
+              </button>
               <label className="inline-flex items-center gap-2 rounded-lg bg-slate-800 px-4 py-2.5 text-sm font-medium text-white hover:bg-slate-700 cursor-pointer transition-colors whitespace-nowrap">
                 <i className="ri-file-upload-line w-5 h-5 flex items-center justify-center"></i>
                 {importProgress || 'Importar Excel'}
