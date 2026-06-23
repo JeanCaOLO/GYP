@@ -10,7 +10,7 @@ GestorGYP es una aplicación web de gestión financiera para **OLO Logistics**. 
 | `/` | Dashboard | Resumen visual con cards y gráficos comparativos |
 | `/catalogo` | Catálogo GYP | Tabla paginada del catálogo de cuentas con CRUD |
 | `/cobros-cofersa` | Cobros Cofersa | Registro de cobros con resumen por período |
-| `/cuentas-ajustadas` | Cuentas Ajustadas | Gestión de cuentas ajustadas con montos mensuales multi-año, fórmulas, vistas GYP y GYP Gerencial |
+| `/cuentas-ajustadas` | Asientos Extracontables | Gestión de asientos extracontables con montos mensuales multi-año, fórmulas, vistas GYP, GYP Gerencial, y GYP Proyectada, ID de asiento automático |
 | `/presupuestos` | Presupuestos | Carga de presupuestos desde Excel, histórico, cruce con catálogo GYP, CRUD |
 | `/activacion-cuentas` | Activación de Cuentas | Gestión masiva de estado activo/inactivo de cuentas |
 | `/factores` | Tasas | Gestión de tasas de cambio, gráfico de evolución multi-tipo, conversor colones↔dólares |
@@ -22,7 +22,7 @@ GestorGYP es una aplicación web de gestión financiera para **OLO Logistics**. 
 - [x] Dashboard con cards KPI y gráfico comparativo 2025 vs 2026
 - [x] Catálogo GYP: tabla paginada, búsqueda, filtros, importar Excel, CRUD
 - [x] Cobros Cofersa: tabla con filtros, resumen por período, importar Excel, CRUD
-- [x] Cuentas Ajustadas: gestión de cuentas ajustadas con montos mensuales por año, fórmulas, vistas GYP/Gerencial
+- [x] Asientos Extracontables: gestión de asientos con montos mensuales por año, fórmulas, vistas GYP/Gerencial/Proyectada, ID de asiento automático (ASI-XXX)
 - [x] Presupuestos: carga de presupuestos desde Excel, histórico, cruce con catálogo GYP, CRUD
 - [x] Tasas: CRUD de tasas de cambio, gráfico de evolución con comparación multi-tipo, conversor de moneda, renombrado masivo de tipos, integración con motor de fórmulas
 - [x] Historial de Cambios: registro unificado de modificaciones (Tasas, Cuentas Ajustadas, Catálogo GYP, Cobros Cofersa - cuentas y registros), filtros por módulo y búsqueda
@@ -309,3 +309,30 @@ GestorGYP es una aplicación web de gestión financiera para **OLO Logistics**. 
 - Goal: Módulo de factores (tasas de cambio), conversor de moneda, soporte multi-país y centros de costo
 - Deliverable: Página /factores, integración con motor de fórmulas, columnas pais_id/centro_costo_id en todas las tablas
 - Status: Completado
+
+## 7. Mayoreo Adaptation (Phase 9 - Completed)
+- Goal: Adaptar GestorGYP para soportar la operación de Mayoreo sobre la misma base multi-entidad
+- Deliverables:
+  - Nueva organización MAYOREO con países (CRC, VNZ, COL) y 6 empresas (Cofersa, Febeca, Beval, Sillaca, Prisma, Mundial de Partes)
+  - Columnas `monto_local` y `monto_usd` en `presupuestos_lineas`
+  - Módulo Asientos Extracontables renombrado desde Cuentas Ajustadas (incluye vistas GYP, GYP Gerencial y GYP Proyectada con ID de asiento automático ASI-XXX)
+  - Filtros de Organización y Empresa en Presupuestos
+  - Edge functions: `cargar-presupuesto-mayoreo-excel`, `cargar-asientos-mayoreo-excel`
+  - Extensión de `formulaEngine.ts` con variables de premisas para vista proyectada (FASE EVALUACIÓN)
+  - Usuarios Mayoreo: Andrea Ramírez y Richard Mezones (pendientes de invitación Supabase Auth)
+- Status: Completado
+
+### Phase 10: Premisas y Vista Proyectada GYP (Completed)
+- Goal: Extender el modelo de ajustes con premisas de proyección para Mayoreo
+- Deliverables:
+  - Tablas `premisas_proyeccion`, `ventas_proyeccion`, `premisas_proyeccion_historico`
+  - Vista SQL `gyp_proyectado_consumo` plana para Power BI
+  - Tercera vista "GYP Proyectada" en `/cuentas-ajustadas` (junto a GYP y GYP Gerencial)
+  - Motor de fórmula extendido con variables `[Venta Actual]`, `[Venta Proyectada]`, `[Semi Neto]`
+  - Modal de premisas con cálculo en vivo (valor directo, calculado con % venta / % semi neto / fórmula)
+  - Panel de administración de variables de venta (`ventas_proyeccion`) con carga Excel y manual
+  - Botón "Recalcular Todo" para re-evaluar premisas contra variables de venta actualizadas
+  - Edge function `cargar-premisas-mayoreo-excel`
+  - Integración con Historial de Cambios (módulo `premisas-proyeccion`)
+  - Todas las decisiones abiertas marcadas con `// CONFIRMAR:` para revisión
+- Status: Completed

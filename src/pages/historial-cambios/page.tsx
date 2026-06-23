@@ -48,6 +48,20 @@ interface CobroCofersaCuentaHistorico {
   created_at: string;
 }
 
+interface PresupuestosCargasHistorico {
+  id: string;
+  carga_id: string;
+  nombre: string;
+  accion: string;
+  cambios: string | null;
+  resumen: string | null;
+  created_at: string;
+  organizacion_id: string | null;
+  compania_id: string | null;
+  pais_id: string | null;
+  centro_costo_id: string | null;
+}
+
 interface EntradaUnificada {
   id: string;
   modulo: string;
@@ -58,12 +72,25 @@ interface EntradaUnificada {
   created_at: string;
 }
 
+interface PremisaHistorico {
+  id: string;
+  premisa_id: string;
+  cuenta_contable: string;
+  accion: string;
+  cambios: string | null;
+  resumen: string | null;
+  organizacion_id: string | null;
+  created_at: string;
+}
+
 const MODULO_COLORS: Record<string, { bg: string; text: string; icon: string }> = {
   tasas: { bg: 'bg-accent-100', text: 'text-accent-700', icon: 'ri-line-chart-line' },
   'cuentas-ajustadas': { bg: 'bg-emerald-100', text: 'text-emerald-700', icon: 'ri-scales-3-line' },
   catalogo: { bg: 'bg-sky-100', text: 'text-sky-700', icon: 'ri-book-open-line' },
   'cobros-cuentas': { bg: 'bg-amber-100', text: 'text-amber-700', icon: 'ri-bank-card-line' },
   'cobros-registros': { bg: 'bg-orange-100', text: 'text-orange-700', icon: 'ri-file-list-3-line' },
+  'premisas-proyeccion': { bg: 'bg-amber-100', text: 'text-amber-700', icon: 'ri-lightbulb-line' },
+  presupuestos: { bg: 'bg-indigo-100', text: 'text-indigo-700', icon: 'ri-file-chart-line' },
 };
 
 const ACCION_COLORS: Record<string, { bg: string; text: string; icon: string }> = {
@@ -74,10 +101,12 @@ const ACCION_COLORS: Record<string, { bg: string; text: string; icon: string }> 
 
 const MODULO_LABELS: Record<string, string> = {
   tasas: 'Tasas',
-  'cuentas-ajustadas': 'Cuentas Ajustadas',
+  'cuentas-ajustadas': 'Asientos Extracontables',
   catalogo: 'Catálogo GYP',
   'cobros-cuentas': 'Cobros - Cuentas',
   'cobros-registros': 'Cobros - Registros',
+  'premisas-proyeccion': 'Premisas Proyección',
+  presupuestos: 'Presupuestos',
 };
 
 function formatTimestamp(ts: string) {
@@ -107,24 +136,30 @@ export default function HistorialCambiosPage() {
   const [catalogoHist, setCatalogoHist] = useState<CatalogoGypHistorico[]>([]);
   const [cobrosCuentasHist, setCobrosCuentasHist] = useState<CobroCofersaCuentaHistorico[]>([]);
   const [cobrosRegistrosHist, setCobrosRegistrosHist] = useState<CobroCofersaHistorico[]>([]);
+  const [premisasHist, setPremisasHist] = useState<PremisaHistorico[]>([]);
+  const [presupuestosHist, setPresupuestosHist] = useState<PresupuestosCargasHistorico[]>([]);
   const [loading, setLoading] = useState(true);
   const [filtroModulo, setFiltroModulo] = useState<string>('todos');
   const [search, setSearch] = useState('');
 
   const fetchData = useCallback(async () => {
     setLoading(true);
-    const [factRes, cuenRes, catRes, cobCtaRes, cobRegRes] = await Promise.all([
+    const [factRes, cuenRes, catRes, cobCtaRes, cobRegRes, premRes, presRes] = await Promise.all([
       supabase.from('factores_historico').select('*').order('created_at', { ascending: false }).limit(500),
       supabase.from('cuentas_ajustadas_historico').select('*').order('created_at', { ascending: false }).limit(500),
       supabase.from('catalogo_gyp_historico').select('*').order('created_at', { ascending: false }).limit(500),
       supabase.from('cobros_cofersa_cuentas_historico').select('*').order('created_at', { ascending: false }).limit(500),
       supabase.from('cobros_cofersa_historico').select('*').order('created_at', { ascending: false }).limit(500),
+      supabase.from('premisas_proyeccion_historico').select('*').order('created_at', { ascending: false }).limit(500),
+      supabase.from('presupuestos_cargas_historico').select('*').order('created_at', { ascending: false }).limit(500),
     ]);
     if (factRes.data) setFactoresHist(factRes.data as FactorHistorico[]);
     if (cuenRes.data) setCuentasHist(cuenRes.data as CuentaAjustadaHistorico[]);
     if (catRes.data) setCatalogoHist(catRes.data as CatalogoGypHistorico[]);
     if (cobCtaRes.data) setCobrosCuentasHist(cobCtaRes.data as CobroCofersaCuentaHistorico[]);
     if (cobRegRes.data) setCobrosRegistrosHist(cobRegRes.data as CobroCofersaHistorico[]);
+    if (premRes.data) setPremisasHist(premRes.data as PremisaHistorico[]);
+    if (presRes.data) setPresupuestosHist(presRes.data as PresupuestosCargasHistorico[]);
     setLoading(false);
   }, []);
 
@@ -209,8 +244,34 @@ export default function HistorialCambiosPage() {
       });
     });
 
+    // Premisas Proyección
+    premisasHist.forEach((h) => {
+      result.push({
+        id: `premisas-${h.id}`,
+        modulo: 'premisas-proyeccion',
+        accion: h.accion,
+        tipo_registro: h.cuenta_contable,
+        resumen: h.resumen || `${h.accion === 'creacion' ? 'Premisa creada' : h.accion === 'eliminacion' ? 'Premisa eliminada' : 'Premisa actualizada'}`,
+        detalle: h.cambios || h.cuenta_contable,
+        created_at: h.created_at,
+      });
+    });
+
+    // Presupuestos
+    presupuestosHist.forEach((h) => {
+      result.push({
+        id: `presupuestos-${h.id}`,
+        modulo: 'presupuestos',
+        accion: h.accion === 'IMPORTAR' ? 'creacion' : h.accion === 'CREAR' ? 'creacion' : h.accion === 'ELIMINAR' ? 'eliminacion' : 'actualizacion',
+        tipo_registro: h.nombre || 'Carga',
+        resumen: h.resumen || `${h.accion === 'IMPORTAR' ? 'Importación desde Excel' : h.accion === 'CREAR' ? 'Carga creada' : 'Carga actualizada'}`,
+        detalle: h.cambios || h.nombre,
+        created_at: h.created_at,
+      });
+    });
+
     return result.sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
-  }, [factoresHist, cuentasHist, catalogoHist, cobrosCuentasHist, cobrosRegistrosHist]);
+  }, [factoresHist, cuentasHist, catalogoHist, cobrosCuentasHist, cobrosRegistrosHist, premisasHist, presupuestosHist]);
 
   const filtered = useMemo(() => {
     return entradas.filter((e) => {
@@ -231,10 +292,12 @@ export default function HistorialCambiosPage() {
     const catalogo = entradas.filter((e) => e.modulo === 'catalogo').length;
     const cobrosCtas = entradas.filter((e) => e.modulo === 'cobros-cuentas').length;
     const cobrosReg = entradas.filter((e) => e.modulo === 'cobros-registros').length;
+    const premisas = entradas.filter((e) => e.modulo === 'premisas-proyeccion').length;
+    const presupuestos = entradas.filter((e) => e.modulo === 'presupuestos').length;
     const creaciones = entradas.filter((e) => e.accion === 'creacion').length;
     const actualizaciones = entradas.filter((e) => e.accion === 'actualizacion').length;
     const eliminaciones = entradas.filter((e) => e.accion === 'eliminacion').length;
-    return { total, tasas, cuentas, catalogo, cobrosCtas, cobrosReg, creaciones, actualizaciones, eliminaciones };
+    return { total, tasas, cuentas, catalogo, cobrosCtas, cobrosReg, premisas, presupuestos, creaciones, actualizaciones, eliminaciones };
   }, [entradas]);
 
   return (
@@ -257,7 +320,7 @@ export default function HistorialCambiosPage() {
           <p className="text-xl font-bold text-accent-600">{stats.tasas}</p>
         </div>
         <div className="rounded-xl bg-background-50 p-4 border border-background-200">
-          <p className="text-xs text-foreground-700">Cuentas Ajustadas</p>
+          <p className="text-xs text-foreground-700">Asientos Extracontables</p>
           <p className="text-xl font-bold text-emerald-600">{stats.cuentas}</p>
         </div>
         <div className="rounded-xl bg-background-50 p-4 border border-background-200">
@@ -304,12 +367,14 @@ export default function HistorialCambiosPage() {
           >
             Todos
           </button>
-          {(['tasas', 'cuentas-ajustadas', 'catalogo', 'cobros-cuentas', 'cobros-registros'] as string[]).map((mod) => {
+          {(['tasas', 'cuentas-ajustadas', 'catalogo', 'cobros-cuentas', 'cobros-registros', 'premisas-proyeccion', 'presupuestos'] as string[]).map((mod) => {
             const modColor = MODULO_COLORS[mod];
             const count = mod === 'tasas' ? stats.tasas
               : mod === 'cuentas-ajustadas' ? stats.cuentas
               : mod === 'catalogo' ? stats.catalogo
               : mod === 'cobros-cuentas' ? stats.cobrosCtas
+              : mod === 'premisas-proyeccion' ? stats.premisas
+              : mod === 'presupuestos' ? stats.presupuestos
               : stats.cobrosReg;
             return (
               <button

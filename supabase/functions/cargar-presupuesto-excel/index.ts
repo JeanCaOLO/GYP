@@ -2,24 +2,19 @@ import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
-const SUPABASE_ANON_KEY = Deno.env.get("SUPABASE_ANON_KEY")!;
+const SUPABASE_SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
 
 const EXCEL_URL = "https://storage.readdy-site.link/project_files/bd8e6ef3-ad62-4f45-9069-921b2cd07414/b3c77601-c764-49d7-a81f-21a5a8d408f3_Presupuesto-GyP.xlsx?v=fe4ce40b453843263c2584f06bda138d";
 
 function parseExcelDate(val: unknown): { anio: number; mes: number } | null {
   if (val === null || val === undefined || val === '') return null;
-
-  // Date object from xlsx cellDates:true
   if (val instanceof Date) {
     const anio = val.getUTCFullYear();
     const mes = val.getUTCMonth() + 1;
     if (mes < 1 || mes > 12) return null;
     return { anio, mes };
   }
-
   const str = String(val).trim();
-
-  // Excel serial number (numeric date)
   const serial = Number(str);
   if (!isNaN(serial) && serial > 1000 && serial < 60000) {
     const date = new Date((serial - 25569) * 86400 * 1000);
@@ -28,39 +23,32 @@ function parseExcelDate(val: unknown): { anio: number; mes: number } | null {
     if (mes < 1 || mes > 12) return null;
     return { anio, mes };
   }
-
-  // String formats: MM-DD-YY, MM/DD/YY, YYYY-MM-DD, ISO, etc.
   const parts = str.split(/[-/]/);
   if (parts.length === 3) {
     const a = parseInt(parts[0], 10);
     const b = parseInt(parts[1], 10);
     const c = parseInt(parts[2], 10);
     if (isNaN(a) || isNaN(b) || isNaN(c)) return null;
-    // YYYY-MM-DD
     if (a > 31) {
       if (b < 1 || b > 12) return null;
       return { anio: a, mes: b };
     }
-    // MM-DD-YY or MM/DD/YY
     const mm = a;
     let yy = c;
     if (mm < 1 || mm > 12) return null;
     if (yy < 50) yy += 2000; else if (yy < 100) yy += 1900;
     return { anio: yy, mes: mm };
   }
-
-  // ISO string fallback
   const d = new Date(str);
   if (!isNaN(d.getTime())) {
     return { anio: d.getUTCFullYear(), mes: d.getUTCMonth() + 1 };
   }
-
   return null;
 }
 
 serve(async () => {
   try {
-    const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+    const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
 
     const response = await fetch(EXCEL_URL);
     if (!response.ok) {
@@ -69,7 +57,6 @@ serve(async () => {
     const buffer = await response.arrayBuffer();
 
     const XLSX = await import("https://esm.sh/xlsx@0.18.5");
-    // cellDates: true -> XLSX parses serial date numbers into Date objects
     const workbook = XLSX.read(buffer, { type: "array", cellDates: true });
     const sheet = workbook.Sheets[workbook.SheetNames[0]];
     const json = XLSX.utils.sheet_to_json(sheet, { defval: "" }) as Record<string, unknown>[];
@@ -91,15 +78,9 @@ serve(async () => {
       const fecha = row["Fecha"] || row["fecha"] || row["FECHA"] || "";
       const montoRaw = row["Monto"] || row["monto"] || row["MONTO"] || 0;
       const monto = Number(montoRaw);
-      if (!cuenta || !fecha) {
-        skipped++;
-        continue;
-      }
+      if (!cuenta || !fecha) { skipped++; continue; }
       const parsed = parseExcelDate(fecha);
-      if (!parsed) {
-        skipped++;
-        continue;
-      }
+      if (!parsed) { skipped++; continue; }
       const descGyp = catalogoMap.get(cuenta) || "";
       if (!descGyp) notInCatalogo++;
       const key = `${cuenta}|${parsed.anio}|${parsed.mes}`;
@@ -150,6 +131,15 @@ serve(async () => {
         inserted += batch.length;
       }
     }
+
+    // Registrar en historial
+    await supabase.from("presupuestos_cargas_historico").insert({
+      carga_id: cargaId,
+      nombre: "Presupuesto GyP.xlsx",
+      accion: "IMPORTAR",
+      resumen: `Carga automática desde Excel. ${rows.length} registros, ${inserted} insertados, ${skipped} omitidos, ${notInCatalogo} sin catálogo.`,
+      cambios: `total_monto: ${totalMonto}`,
+    });
 
     return new Response(
       JSON.stringify({

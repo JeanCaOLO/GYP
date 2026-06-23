@@ -135,6 +135,7 @@ function CargasTab({ onVerLineas }: { onVerLineas: (cargaId: string) => void }) 
   const { addToast } = useToast();
   const { paises, centrosCostos } = useUbicaciones();
   const { isSuperAdmin, userScope, canEdit, canDelete } = usePermissions();
+  const { user } = useAuth();
   const canWrite = canEdit;
 
   const fetchData = useCallback(async () => {
@@ -196,6 +197,17 @@ function CargasTab({ onVerLineas }: { onVerLineas: (cargaId: string) => void }) 
     try {
       const { error } = await supabase.from('presupuestos_cargas').delete().eq('id', item.id);
       if (error) throw error;
+      // Registrar en historial
+      await supabase.from('presupuestos_cargas_historico').insert({
+        carga_id: item.id,
+        nombre: item.nombre,
+        accion: 'ELIMINAR',
+        resumen: `Carga eliminada: ${item.nombre}`,
+        cambios: `total_monto: ${item.total_monto}, registros: ${item.cantidad_registros}`,
+        organizacion_id: item.organizacion_id || userScope.organizacion_id || null,
+        compania_id: item.compania_id || userScope.compania_id || null,
+        pais_id: item.pais_id || userScope.pais_id || null,
+      });
       addToast('success', 'Carga eliminada');
       setConfirmDelete(null);
       fetchData();
@@ -211,11 +223,45 @@ function CargasTab({ onVerLineas }: { onVerLineas: (cargaId: string) => void }) 
     try {
       const xlsx = await import('xlsx');
       const data = await file.arrayBuffer();
-      // cellDates: true → xlsx convierte los números seriales de fecha a objetos Date
       const workbook = xlsx.read(data, { type: 'array', cellDates: true });
       const sheet = workbook.Sheets[workbook.SheetNames[0]];
       const json = xlsx.utils.sheet_to_json(sheet, { defval: '' }) as Record<string, unknown>[];
 
+      if (json.length === 0) {
+        addToast('warning', 'El archivo está vacío.');
+        return;
+      }
+
+      const headers = Object.keys(json[0]);
+      const hasEmpresa = headers.some(h => /empresa/i.test(h));
+      const hasMontoLocal = headers.some(h => /monto local|monto_local|presupuesto local/i.test(h));
+      const hasMontoUsd = headers.some(h => /monto usd|monto_usd|presupuesto usd|monto dolar/i.test(h));
+      const isMayoreoFormat = hasEmpresa || hasMontoLocal || hasMontoUsd;
+
+      // ── FORMATO MAYOREO → Edge Function ──
+      if (isMayoreoFormat) {
+        setImportProgress('Enviando a procesador Mayoreo...');
+        const base64 = await new Promise<string>((resolve) => {
+          const reader = new FileReader();
+          reader.onloadend = () => {
+            const result = reader.result as string;
+            resolve(result.split(',')[1]);
+          };
+          reader.readAsDataURL(file);
+        });
+
+        const { data: result, error } = await supabase.functions.invoke('cargar-presupuesto-mayoreo-excel', {
+          body: { fileBase64: base64, fileName: file.name },
+        });
+        if (error) throw error;
+        if (result?.error) throw new Error(result.error);
+
+        addToast('success', `${result.inserted} líneas importadas (Mayoreo). ${result.skipped} omitidas.`);
+        fetchData();
+        return;
+      }
+
+      // ── FORMATO ESTÁNDAR → Parseo directo ──
       // Fetch catalogo for cross-reference
       setImportProgress('Consultando catálogo GYP...');
       const { data: catData } = await supabase.from('catalogo_gyp').select('cuenta, descripcion').eq('activa', true);
@@ -254,6 +300,9 @@ function CargasTab({ onVerLineas }: { onVerLineas: (cargaId: string) => void }) 
       }
 
       const totalMonto = rows.reduce((s, r) => s + r.monto, 0);
+      const userOrgId = userScope.organizacion_id || null;
+      const userPaisId = userScope.pais_id || null;
+      const userCompId = userScope.compania_id || null;
 
       // Create carga
       setImportProgress(`Creando carga con ${rows.length} registros...`);
@@ -264,6 +313,10 @@ function CargasTab({ onVerLineas }: { onVerLineas: (cargaId: string) => void }) 
           descripcion: `Importado desde Excel. ${rows.length} registros. ${notInCatalogo} cuentas no encontradas en catálogo GYP.`,
           cantidad_registros: rows.length,
           total_monto: totalMonto,
+          organizacion_id: userOrgId,
+          pais_id: userPaisId,
+          compania_id: userCompId,
+          centro_costo_id: null,
         })
         .select('id')
         .single();
@@ -278,7 +331,13 @@ function CargasTab({ onVerLineas }: { onVerLineas: (cargaId: string) => void }) 
       const BATCH_SIZE = 500;
       let inserted = 0;
       for (let i = 0; i < rows.length; i += BATCH_SIZE) {
-        const batch = rows.slice(i, i + BATCH_SIZE).map((r) => ({ ...r, carga_id: cargaId }));
+        const batch = rows.slice(i, i + BATCH_SIZE).map((r) => ({
+          ...r,
+          carga_id: cargaId,
+          organizacion_id: userOrgId,
+          pais_id: userPaisId,
+          compania_id: userCompId,
+        }));
         setImportProgress(`Guardando ${Math.min(i + batch.length, rows.length)} de ${rows.length}...`);
         const { error } = await supabase.from('presupuestos_lineas').insert(batch);
         if (error) {
@@ -287,6 +346,18 @@ function CargasTab({ onVerLineas }: { onVerLineas: (cargaId: string) => void }) 
           inserted += batch.length;
         }
       }
+
+      // Registrar en historial
+      await supabase.from('presupuestos_cargas_historico').insert({
+        carga_id: cargaId,
+        nombre: file.name.replace(/\.[^/.]+$/, ''),
+        accion: 'IMPORTAR',
+        resumen: `Carga desde Excel. ${rows.length} registros, ${inserted} insertados, ${skipped} omitidos, ${notInCatalogo} sin catálogo.`,
+        cambios: `total_monto: ${totalMonto}`,
+        organizacion_id: userOrgId,
+        compania_id: userCompId,
+        pais_id: userPaisId,
+      });
 
       addToast('success', `${inserted} líneas importadas. ${notInCatalogo} cuentas no en catálogo GYP.`);
       fetchData();
@@ -300,8 +371,25 @@ function CargasTab({ onVerLineas }: { onVerLineas: (cargaId: string) => void }) 
 
   const handleSave = async (formData: Record<string, unknown>) => {
     try {
-      const { error } = await supabase.from('presupuestos_cargas').insert(formData);
+      const payload = {
+        ...formData,
+        organizacion_id: userScope.organizacion_id || null,
+        pais_id: userScope.pais_id || null,
+        compania_id: userScope.compania_id || null,
+      };
+      const { data, error } = await supabase.from('presupuestos_cargas').insert(payload).select('id').single();
       if (error) throw error;
+      // Registrar en historial
+      await supabase.from('presupuestos_cargas_historico').insert({
+        carga_id: data.id,
+        nombre: String(formData.nombre || ''),
+        accion: 'CREAR',
+        resumen: `Carga manual creada.`,
+        cambios: JSON.stringify(formData),
+        organizacion_id: userScope.organizacion_id || null,
+        compania_id: userScope.compania_id || null,
+        pais_id: userScope.pais_id || null,
+      });
       addToast('success', 'Carga creada');
       setModalOpen(false);
       fetchData();
@@ -579,7 +667,9 @@ function LineasTab({ cargaFiltroExterno, onLimpiarFiltro }: { cargaFiltroExterno
   const [filtroMes, setFiltroMes] = useState<number | ''>('');
   const [filtroEstado, setFiltroEstado] = useState<'all' | 'active' | 'inactive'>('all');
   const [filtroEnCatalogo, setFiltroEnCatalogo] = useState<'all' | 'existente' | 'no_existente'>('all');
+  const [filtroOrganizacion, setFiltroOrganizacion] = useState('');
   const [filtroPais, setFiltroPais] = useState('');
+  const [filtroCompania, setFiltroCompania] = useState('');
   const [filtroCentroCosto, setFiltroCentroCosto] = useState('');
   const [page, setPage] = useState(0);
   const [modalOpen, setModalOpen] = useState(false);
@@ -587,7 +677,7 @@ function LineasTab({ cargaFiltroExterno, onLimpiarFiltro }: { cargaFiltroExterno
   const [confirmDelete, setConfirmDelete] = useState<PresupuestoLinea | null>(null);
   const { isAdmin } = useAuth();
   const { addToast } = useToast();
-  const { paises, centrosCostos } = useUbicaciones();
+  const { organizaciones, paises, companias, centrosCostos, organizacionesMap, paisesMap, companiasMap } = useUbicaciones();
   const { isSuperAdmin: lisScope, userScope: luserScope, canEdit: lcanEdit } = usePermissions();
   const canWriteLineas = lcanEdit;
 
@@ -646,11 +736,13 @@ function LineasTab({ cargaFiltroExterno, onLimpiarFiltro }: { cargaFiltroExterno
       const matchesEstado = filtroEstado === 'all' || (filtroEstado === 'active' && l.activa) || (filtroEstado === 'inactive' && !l.activa);
       const gypItem = catalogoMap.get(l.cuenta);
       const matchesCatalogo = filtroEnCatalogo === 'all' || (filtroEnCatalogo === 'existente' && !!gypItem) || (filtroEnCatalogo === 'no_existente' && !gypItem);
+      const matchesOrganizacion = !filtroOrganizacion || l.organizacion_id === filtroOrganizacion;
       const matchesPais = !filtroPais || l.pais_id === filtroPais;
+      const matchesCompania = !filtroCompania || l.compania_id === filtroCompania;
       const matchesCC = !filtroCentroCosto || l.centro_costo_id === filtroCentroCosto;
-      return matchesSearch && matchesCarga && matchesAnio && matchesMes && matchesEstado && matchesCatalogo && matchesPais && matchesCC;
+      return matchesSearch && matchesCarga && matchesAnio && matchesMes && matchesEstado && matchesCatalogo && matchesOrganizacion && matchesPais && matchesCompania && matchesCC;
     });
-  }, [lineas, search, filtroCarga, filtroAnio, filtroMes, filtroEstado, filtroEnCatalogo, catalogoMap, filtroPais, filtroCentroCosto]);
+  }, [lineas, search, filtroCarga, filtroAnio, filtroMes, filtroEstado, filtroEnCatalogo, catalogoMap, filtroOrganizacion, filtroPais, filtroCompania, filtroCentroCosto]);
 
   const totalPages = Math.ceil(filtered.length / PAGE_SIZE);
   const paginated = filtered.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE);
@@ -783,9 +875,17 @@ function LineasTab({ cargaFiltroExterno, onLimpiarFiltro }: { cargaFiltroExterno
             <option value="active">Activos</option>
             <option value="inactive">Inactivos</option>
           </select>
+          <select value={filtroOrganizacion} onChange={(e) => { setFiltroOrganizacion(e.target.value); setPage(0); }} className="rounded-lg border border-background-200 bg-background-100 px-3 py-2 text-sm outline-none focus:border-primary-500 min-w-[140px]">
+            <option value="">Todas las organizaciones</option>
+            {organizaciones.map((o) => <option key={o.id} value={o.id}>{o.nombre}</option>)}
+          </select>
           <select value={filtroPais} onChange={(e) => { setFiltroPais(e.target.value); setPage(0); }} className="rounded-lg border border-background-200 bg-background-100 px-3 py-2 text-sm outline-none focus:border-primary-500 min-w-[140px]">
             <option value="">Todos los países</option>
             {paises.map((p) => <option key={p.id} value={p.id}>{p.nombre} ({p.codigo})</option>)}
+          </select>
+          <select value={filtroCompania} onChange={(e) => { setFiltroCompania(e.target.value); setPage(0); }} className="rounded-lg border border-background-200 bg-background-100 px-3 py-2 text-sm outline-none focus:border-primary-500 min-w-[140px]">
+            <option value="">Todas las compañías</option>
+            {companias.map((c) => <option key={c.id} value={c.id}>{c.nombre}</option>)}
           </select>
           <select value={filtroCentroCosto} onChange={(e) => { setFiltroCentroCosto(e.target.value); setPage(0); }} className="rounded-lg border border-background-200 bg-background-100 px-3 py-2 text-sm outline-none focus:border-primary-500 min-w-[160px]">
             <option value="">Todos los centros de costo</option>
@@ -823,7 +923,10 @@ function LineasTab({ cargaFiltroExterno, onLimpiarFiltro }: { cargaFiltroExterno
                 <th className="py-3 pr-4 font-medium whitespace-nowrap">Descripción GYP</th>
                 <th className="py-3 pr-4 font-medium whitespace-nowrap">En GYP</th>
                 <th className="py-3 pr-4 font-medium whitespace-nowrap">Período</th>
-                <th className="py-3 pr-4 font-medium whitespace-nowrap">Monto</th>
+                <th className="py-3 pr-4 font-medium whitespace-nowrap">Monto Local</th>
+                <th className="py-3 pr-4 font-medium whitespace-nowrap">Monto USD</th>
+                <th className="py-3 pr-4 font-medium whitespace-nowrap">Org.</th>
+                <th className="py-3 pr-4 font-medium whitespace-nowrap">Cía.</th>
                 <th className="py-3 pr-4 font-medium whitespace-nowrap">Estado</th>
                 {canWriteLineas && <th className="py-3 pr-4 font-medium whitespace-nowrap">Acciones</th>}
               </tr>
@@ -832,14 +935,14 @@ function LineasTab({ cargaFiltroExterno, onLimpiarFiltro }: { cargaFiltroExterno
               {loading ? (
                 Array.from({ length: 8 }).map((_, i) => (
                   <tr key={i} className="border-b border-background-100">
-                    {Array.from({ length: canWriteLineas ? 8 : 7 }).map((_, j) => (
+                    {Array.from({ length: canWriteLineas ? 12 : 11 }).map((_, j) => (
                       <td key={j} className="py-3 pr-4"><div className="h-4 bg-background-200 rounded animate-pulse w-24"></div></td>
                     ))}
                   </tr>
                 ))
               ) : paginated.length === 0 ? (
                 <tr>
-                  <td colSpan={canWriteLineas ? 8 : 7} className="py-8 text-center text-foreground-600">
+                  <td colSpan={canWriteLineas ? 12 : 11} className="py-8 text-center text-foreground-600">
                     No se encontraron líneas de presupuesto
                   </td>
                 </tr>
@@ -870,7 +973,10 @@ function LineasTab({ cargaFiltroExterno, onLimpiarFiltro }: { cargaFiltroExterno
                         )}
                       </td>
                       <td className="py-3 pr-4 text-foreground-700 whitespace-nowrap">{MESES[item.mes - 1]?.substring(0, 3)} {item.anio}</td>
-                      <td className="py-3 pr-4 text-foreground-950 whitespace-nowrap font-medium">{formatCurrency(item.monto)}</td>
+                      <td className="py-3 pr-4 text-foreground-950 whitespace-nowrap font-medium">{formatCurrency(item.monto_local ?? item.monto)}</td>
+                      <td className="py-3 pr-4 text-foreground-700 whitespace-nowrap">{item.monto_usd != null ? formatCurrency(item.monto_usd) : '-'}</td>
+                      <td className="py-3 pr-4 text-foreground-600 whitespace-nowrap text-xs">{organizacionesMap.get(item.organizacion_id || '') || <span className="text-foreground-400 italic">—</span>}</td>
+                      <td className="py-3 pr-4 text-foreground-600 whitespace-nowrap text-xs">{companiasMap.get(item.compania_id || '') || <span className="text-foreground-400 italic">—</span>}</td>
                       <td className="py-3 pr-4 whitespace-nowrap">
                         <span className={`inline-flex rounded-full px-2.5 py-0.5 text-xs font-medium ${item.activa ? 'bg-emerald-100 text-emerald-700' : 'bg-background-100 text-foreground-700'}`}>
                           {item.activa ? 'Activa' : 'Inactiva'}
@@ -973,14 +1079,19 @@ function LineaModal({
   onClose: () => void;
   onSave: (data: Record<string, unknown>) => void;
 }) {
+  const { organizaciones, companias } = useUbicaciones();
   const [form, setForm] = useState({
     carga_id: item?.carga_id || (cargas[0]?.id || ''),
     cuenta: item?.cuenta || '',
     anio: item?.anio || new Date().getFullYear(),
     mes: item?.mes || 1,
     monto: item?.monto || '',
+    monto_local: item?.monto_local ?? '',
+    monto_usd: item?.monto_usd ?? '',
     activa: item?.activa ?? true,
+    organizacion_id: item?.organizacion_id || '',
     pais_id: item?.pais_id || '',
+    compania_id: item?.compania_id || '',
     centro_costo_id: item?.centro_costo_id || '',
   });
   const [cuentaSearch, setCuentaSearch] = useState('');
@@ -1060,13 +1171,39 @@ function LineaModal({
               </select>
             </div>
           </div>
-          <div>
-            <label className="block text-sm font-medium text-slate-700 mb-1">Monto</label>
-            <input type="number" step="0.01" value={form.monto} onChange={(e) => setForm({ ...form, monto: e.target.value })} className="w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-900 outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500" placeholder="0.00" />
+          <div className="grid grid-cols-3 gap-4">
+            <div>
+              <label className="block text-sm font-medium text-slate-700 mb-1">Monto</label>
+              <input type="number" step="0.01" value={form.monto} onChange={(e) => setForm({ ...form, monto: e.target.value })} className="w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-900 outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500" placeholder="0.00" />
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-slate-700 mb-1">Monto Local</label>
+              <input type="number" step="0.01" value={form.monto_local} onChange={(e) => setForm({ ...form, monto_local: e.target.value })} className="w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-900 outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500" placeholder="0.00" />
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-slate-700 mb-1">Monto USD</label>
+              <input type="number" step="0.01" value={form.monto_usd} onChange={(e) => setForm({ ...form, monto_usd: e.target.value })} className="w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-900 outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500" placeholder="0.00" />
+            </div>
           </div>
           <div className="flex items-center gap-2">
             <input type="checkbox" id="activa-linea" checked={form.activa} onChange={(e) => setForm({ ...form, activa: e.target.checked })} className="h-4 w-4 rounded border-slate-300 text-emerald-600 focus:ring-emerald-500" />
             <label htmlFor="activa-linea" className="text-sm text-slate-700">Activa</label>
+          </div>
+          <div className="grid grid-cols-2 gap-4">
+            <div>
+              <label className="block text-sm font-medium text-slate-700 mb-1">Organización</label>
+              <select value={form.organizacion_id} onChange={(e) => setForm({ ...form, organizacion_id: e.target.value })} className="w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-900 outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500">
+                <option value="">Seleccionar organización...</option>
+                {organizaciones.map((o) => <option key={o.id} value={o.id}>{o.nombre}</option>)}
+              </select>
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-slate-700 mb-1">Compañía</label>
+              <select value={form.compania_id} onChange={(e) => setForm({ ...form, compania_id: e.target.value })} className="w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-900 outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500">
+                <option value="">Seleccionar compañía...</option>
+                {companias.map((c) => <option key={c.id} value={c.id}>{c.nombre}</option>)}
+              </select>
+            </div>
           </div>
           <div className="grid grid-cols-2 gap-4">
             <div>

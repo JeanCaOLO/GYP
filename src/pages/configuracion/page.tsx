@@ -53,6 +53,7 @@ export default function ConfiguracionPage() {
   const [inviteCompaniaId, setInviteCompaniaId] = useState('');
   const [inviteOrganizacionId, setInviteOrganizacionId] = useState('');
   const [inviteLoading, setInviteLoading] = useState(false);
+  const [creatingMayoreoUsers, setCreatingMayoreoUsers] = useState(false);
 
   const fetchStats = useCallback(async () => {
     setLoadingStats(true);
@@ -172,6 +173,32 @@ export default function ConfiguracionPage() {
       addToast('error', 'Error al enviar invitación');
     } finally {
       setInviteLoading(false);
+    }
+  };
+
+  const handleCreateMayoreoUsers = async () => {
+    setCreatingMayoreoUsers(true);
+    try {
+      const { data, error } = await supabase.functions.invoke('crear-usuarios-mayoreo', {
+        body: {},
+      });
+      if (error) {
+        addToast('error', `Error: ${error.message || 'No se pudo conectar con el servidor'}`);
+        return;
+      }
+      if (data?.success) {
+        const created = data.results?.filter((r: { status: string }) => r.status === 'created').length || 0;
+        const updated = data.results?.filter((r: { status: string }) => r.status === 'updated').length || 0;
+        addToast('success', `Usuarios Mayoreo: ${created} creados, ${updated} actualizados. Revisá la tabla.`);
+        fetchUsuarios();
+      } else {
+        addToast('error', `Error: ${data?.error || 'Respuesta inesperada'}`);
+      }
+    } catch (err) {
+      addToast('error', 'Error al crear usuarios Mayoreo');
+      console.error(err);
+    } finally {
+      setCreatingMayoreoUsers(false);
     }
   };
 
@@ -405,15 +432,27 @@ export default function ConfiguracionPage() {
               <h3 className="text-lg font-semibold text-slate-900">Usuarios del Sistema</h3>
               <p className="text-sm text-slate-500">{usuarios.length} usuario{usuarios.length !== 1 ? 's' : ''} registrado{usuarios.length !== 1 ? 's' : ''}</p>
             </div>
-            {isSuperAdmin && (
-              <button
-                onClick={() => setShowInviteModal(true)}
-                className="rounded-lg bg-emerald-600 px-4 py-2 text-sm font-medium text-white hover:bg-emerald-700 transition-colors"
-              >
-                <i className="ri-user-add-line mr-1"></i>
-                Invitar Usuario
-              </button>
-            )}
+            <div className="flex gap-2">
+              {isSuperAdmin && (
+                <button
+                  onClick={handleCreateMayoreoUsers}
+                  disabled={creatingMayoreoUsers}
+                  className="rounded-lg bg-amber-600 px-4 py-2 text-sm font-medium text-white hover:bg-amber-700 transition-colors disabled:opacity-50 whitespace-nowrap"
+                >
+                  <i className="ri-user-add-line mr-1"></i>
+                  {creatingMayoreoUsers ? 'Creando...' : 'Crear Usuarios Mayoreo'}
+                </button>
+              )}
+              {isSuperAdmin && (
+                <button
+                  onClick={() => setShowInviteModal(true)}
+                  className="rounded-lg bg-emerald-600 px-4 py-2 text-sm font-medium text-white hover:bg-emerald-700 transition-colors whitespace-nowrap"
+                >
+                  <i className="ri-user-add-line mr-1"></i>
+                  Invitar Usuario
+                </button>
+              )}
+            </div>
           </div>
 
           <div className="rounded-xl bg-white border border-slate-200 overflow-hidden">

@@ -115,6 +115,7 @@ export interface CobroCofersa {
 
 export interface CuentaAjustada {
   id: string;
+  asiento_id: string | null;
   cuenta_contable: string;
   descripcion_ajuste: string;
   tipo_saldo: 'acreedor' | 'deudor';
@@ -218,6 +219,8 @@ export interface PresupuestoLinea {
   anio: number;
   mes: number;
   monto: number;
+  monto_local: number | null;
+  monto_usd: number | null;
   descripcion_gyp: string | null;
   activa: boolean;
   created_at: string;
@@ -225,4 +228,40 @@ export interface PresupuestoLinea {
   centro_costo_id: string | null;
   organizacion_id: string | null;
   compania_id: string | null;
+}
+
+export interface PremisaProyeccion {
+  id: string;
+  organizacion_id: string | null;
+  pais_id: string;
+  compania_id: string;
+  cuenta_contable: string;
+  centro_costo_id: string | null;
+  anio: number;
+  mes: number;
+  metodo: 'valor_directo' | 'calculado';
+  valor_dolar: number | null;
+  pct_venta: number | null;
+  base_venta: 'actual' | 'proyectada' | null;
+  pct_semineto: number | null;
+  formula: string | null;
+  valor_proyectado: number;
+  activa: boolean;
+  created_at: string;
+}
+
+export interface VentaProyeccion {
+  id: string;
+  organizacion_id: string | null;
+  pais_id: string;
+  compania_id: string;
+  cuenta_contable: string | null;
+  centro_costo_id: string | null;
+  anio: number;
+  mes: number;
+  venta_actual: number;
+  venta_proyectada: number;
+  semi_neto: number;
+  activa: boolean;
+  created_at: string;
 }
