@@ -168,6 +168,32 @@ export default function CuentasAjustadasPage() {
     return { total, activas, inactivas, existentes, noExistentes, repetidas, acreedor, deudor, gypGerencial, gypProyectada };
   }, [cuentas, catalogoMap, cuentasRepetidas]);
 
+  const handleDownloadTemplate = () => {
+    const headers = [
+      'CUENTA_CONTABLE', 'DESCRIPCION', 'TIPO_SALDO', 'AJUSTE', 'FECHA',
+      'VISTA', 'CATEGORIA', 'ORGANIZACION', 'PAIS', 'COMPANIA', 'CENTRO_COSTO',
+    ];
+
+    import('xlsx').then((xlsx) => {
+      const ws = xlsx.utils.aoa_to_sheet([headers]);
+      const wb = xlsx.utils.book_new();
+      xlsx.utils.book_append_sheet(wb, ws, 'Asientos');
+
+      const wbout = xlsx.write(wb, { bookType: 'xlsx', type: 'array' });
+      const blob = new Blob([wbout], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = 'Plantilla_Asientos_Extracontables.xlsx';
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    }).catch((err) => {
+      addToast('error', 'Error al generar plantilla: ' + err.message);
+    });
+  };
+
   const handleImportExcel = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -188,6 +214,29 @@ export default function CuentasAjustadasPage() {
         return '';
       };
 
+      // Build reverse lookup maps: normalized name/code → ID
+      const normalizeStr = (s: string) => String(s).trim().toLowerCase();
+      const orgLookup = new Map<string, string>();
+      organizaciones.forEach((o) => {
+        orgLookup.set(normalizeStr(o.nombre), o.id);
+        if ((o as any).codigo) orgLookup.set(normalizeStr((o as any).codigo), o.id);
+      });
+      const paisLookup = new Map<string, string>();
+      paises.forEach((p) => {
+        paisLookup.set(normalizeStr(p.nombre), p.id);
+        if (p.codigo) paisLookup.set(normalizeStr(p.codigo), p.id);
+      });
+      const ciaLookup = new Map<string, string>();
+      companias.forEach((c) => {
+        ciaLookup.set(normalizeStr(c.nombre), c.id);
+        if ((c as any).codigo) ciaLookup.set(normalizeStr((c as any).codigo), c.id);
+      });
+      const ccLookup = new Map<string, string>();
+      centrosCostos.forEach((c) => {
+        ccLookup.set(normalizeStr(c.nombre), c.id);
+        if ((c as any).codigo) ccLookup.set(normalizeStr((c as any).codigo), c.id);
+      });
+
       const toInsert = json
         .map((row) => {
           const cuenta_contable = String(
@@ -206,6 +255,14 @@ export default function CuentasAjustadasPage() {
           const fechaVal = fechaRaw ? String(fechaRaw).trim() : null;
           const vistaVal = String(getVal(row, 'Vista', 'vista', 'VISTA', 'View', 'VIEW') || '').trim();
           const categoriaPadre = String(getVal(row, 'Categoria', 'categoria', 'CATEGORIA', 'Categoria Padre', 'categoria_padre', 'CATEGORIA_PADRE') || '').trim();
+          const orgNombre = String(getVal(row, 'ORGANIZACION', 'Organizacion', 'organizacion', 'Org', 'ORG') || '').trim();
+          const paisNombre = String(getVal(row, 'PAIS', 'Pais', 'pais', 'País', 'PAÍS') || '').trim();
+          const ciaNombre = String(getVal(row, 'COMPANIA', 'Compania', 'compania', 'Cia', 'CIA', 'Compañía', 'COMPAÑÍA') || '').trim();
+          const ccNombre = String(getVal(row, 'CENTRO_COSTO', 'Centro_Costo', 'centro_costo', 'Centro Costo', 'CC', 'Cc') || '').trim();
+          const organizacion_id = orgNombre ? orgLookup.get(normalizeStr(orgNombre)) || null : null;
+          const pais_id = paisNombre ? paisLookup.get(normalizeStr(paisNombre)) || null : null;
+          const compania_id = ciaNombre ? ciaLookup.get(normalizeStr(ciaNombre)) || null : null;
+          const centro_costo_id = ccNombre ? ccLookup.get(normalizeStr(ccNombre)) || null : null;
           if (!cuenta_contable || !descripcion) return null;
           return {
             cuenta_contable,
@@ -215,11 +272,15 @@ export default function CuentasAjustadasPage() {
             fecha: fechaVal,
             vista: ['GYP', 'GYP Gerencial'].includes(vistaVal) ? vistaVal : null,
             categoria_padre: categoriaPadre || null,
+            organizacion_id: organizacion_id || null,
+            pais_id: pais_id || null,
+            compania_id: compania_id || null,
+            centro_costo_id: centro_costo_id || null,
             es_cuenta_padre: false,
             activa: true,
           };
         })
-        .filter(Boolean) as { cuenta_contable: string; descripcion_ajuste: string; tipo_saldo: 'acreedor' | 'deudor'; ajuste: number; fecha: string | null; vista: string | null; categoria_padre: string | null; es_cuenta_padre: boolean; activa: boolean }[];
+        .filter(Boolean) as { cuenta_contable: string; descripcion_ajuste: string; tipo_saldo: 'acreedor' | 'deudor'; ajuste: number; fecha: string | null; vista: string | null; categoria_padre: string | null; organizacion_id: string | null; pais_id: string | null; compania_id: string | null; centro_costo_id: string | null; es_cuenta_padre: boolean; activa: boolean }[];
 
       if (toInsert.length === 0) {
         addToast('warning', 'No se encontraron registros válidos. Verificá las columnas.');
@@ -747,14 +808,21 @@ export default function CuentasAjustadasPage() {
           <div className="flex gap-2 ml-auto">
             {canWrite && (
               <>
-                <label className="inline-flex items-center gap-2 rounded-lg bg-foreground-950 px-4 py-2.5 text-sm font-medium text-background-50 hover:bg-foreground-900 cursor-pointer transition-colors whitespace-nowrap">
+                <button
+                  onClick={handleDownloadTemplate}
+                  className="inline-flex items-center gap-2 rounded-lg bg-emerald-600 px-5 py-3 text-sm font-semibold text-white hover:bg-emerald-700 active:scale-95 transition-all whitespace-nowrap"
+                >
+                  <i className="ri-download-line w-5 h-5 flex items-center justify-center"></i>
+                  Descargar Plantilla
+                </button>
+                <label className="inline-flex items-center gap-2 rounded-lg bg-amber-500 px-5 py-3 text-sm font-semibold text-white hover:bg-amber-600 active:scale-95 cursor-pointer transition-all whitespace-nowrap">
                   <i className="ri-file-upload-line w-5 h-5 flex items-center justify-center"></i>
                   {importProgress || 'Importar Excel'}
                   <input type="file" accept=".xlsx,.xls" className="hidden" onChange={handleImportExcel} disabled={!!importProgress} />
                 </label>
                 <button
                   onClick={() => { setEditing(null); setModalOpen(true); }}
-                  className="inline-flex items-center gap-2 rounded-lg bg-primary-500 px-4 py-2.5 text-sm font-medium text-background-50 hover:bg-primary-600 transition-colors whitespace-nowrap"
+                  className="inline-flex items-center gap-2 rounded-lg bg-primary-500 px-5 py-3 text-sm font-semibold text-background-50 hover:bg-primary-600 active:scale-95 transition-all whitespace-nowrap"
                 >
                   <i className="ri-add-line w-5 h-5 flex items-center justify-center"></i>
                   Nuevo Ajuste
