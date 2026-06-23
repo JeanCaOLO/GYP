@@ -398,6 +398,29 @@ function CargasTab({ onVerLineas }: { onVerLineas: (cargaId: string) => void }) 
     }
   };
 
+  const handleDownloadTemplate = () => {
+    const headers = ['CUENTA', 'FECHA', 'MONTO'];
+
+    import('xlsx').then((xlsx) => {
+      const ws = xlsx.utils.aoa_to_sheet([headers]);
+      const wb = xlsx.utils.book_new();
+      xlsx.utils.book_append_sheet(wb, ws, 'Presupuesto');
+
+      const wbout = xlsx.write(wb, { bookType: 'xlsx', type: 'array' });
+      const blob = new Blob([wbout], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = 'Plantilla_Presupuestos.xlsx';
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    }).catch((err) => {
+      addToast('error', 'Error al generar plantilla: ' + err.message);
+    });
+  };
+
   return (
     <div className="space-y-6">
       {/* Botón de carga inicial del Excel */}
@@ -447,7 +470,14 @@ function CargasTab({ onVerLineas }: { onVerLineas: (cargaId: string) => void }) 
             </select>
             {canWrite && (
               <>
-                <label className={`inline-flex items-center gap-2 rounded-lg bg-foreground-950 px-4 py-2.5 text-sm font-medium text-background-50 hover:bg-foreground-900 cursor-pointer transition-colors whitespace-nowrap ${importProgress ? 'opacity-60 pointer-events-none' : ''}`}>
+                <button
+                  onClick={handleDownloadTemplate}
+                  className="inline-flex items-center gap-2 rounded-lg bg-emerald-600 px-5 py-3 text-sm font-semibold text-white hover:bg-emerald-700 active:scale-95 transition-all whitespace-nowrap"
+                >
+                  <i className="ri-download-line w-5 h-5 flex items-center justify-center"></i>
+                  Descargar Plantilla
+                </button>
+                <label className={`inline-flex items-center gap-2 rounded-lg bg-amber-500 px-5 py-3 text-sm font-semibold text-white hover:bg-amber-600 active:scale-95 cursor-pointer transition-all whitespace-nowrap ${importProgress ? 'opacity-60 pointer-events-none' : ''}`}>
                   <i className="ri-file-upload-line w-5 h-5 flex items-center justify-center"></i>
                   {importProgress ? (
                     <span className="flex items-center gap-1.5">
@@ -464,7 +494,7 @@ function CargasTab({ onVerLineas }: { onVerLineas: (cargaId: string) => void }) 
                 </label>
                 <button
                   onClick={() => setModalOpen(true)}
-                  className="inline-flex items-center gap-2 rounded-lg bg-primary-500 px-4 py-2.5 text-sm font-medium text-background-50 hover:bg-primary-600 transition-colors whitespace-nowrap"
+                  className="inline-flex items-center gap-2 rounded-lg bg-primary-500 px-5 py-3 text-sm font-semibold text-background-50 hover:bg-primary-600 active:scale-95 transition-all whitespace-nowrap"
                 >
                   <i className="ri-add-line w-5 h-5 flex items-center justify-center"></i>
                   Nueva Carga
