@@ -11,6 +11,7 @@ import ConfiguracionPage from "../pages/configuracion/page";
 import PresupuestosPage from "../pages/presupuestos/page";
 import FactoresPage from "../pages/factores/page";
 import HistorialCambiosPage from "../pages/historial-cambios/page";
+import AsientosExtracontablesPage from "../pages/asientos-extracontables/page";
 
 const routes: RouteObject[] = [
   {
@@ -33,6 +34,7 @@ const routes: RouteObject[] = [
       { path: "/presupuestos", element: <PresupuestosPage /> },
       { path: "/factores", element: <FactoresPage /> },
       { path: "/historial-cambios", element: <HistorialCambiosPage /> },
+      { path: "/asientos-extracontables", element: <AsientosExtracontablesPage /> },
     ],
   },
   {

@@ -5,6 +5,8 @@ import { useAuth } from '@/contexts/AuthContext';
 import { useToast } from '@/contexts/ToastContext';
 import { ConfirmModal } from '@/components/base/ConfirmModal';
 import { CatalogoModal } from '@/pages/catalogo/components/CatalogoModal';
+import ImportPreviewModal from '@/pages/catalogo/components/ImportPreviewModal';
+import type { ImportPreviewRow } from '@/pages/catalogo/components/ImportPreviewModal';
 import { useUbicaciones } from '@/hooks/useUbicaciones';
 import { usePermissions } from '@/hooks/usePermissions';
 
@@ -29,6 +31,19 @@ export default function CatalogoPage() {
   const [editing, setEditing] = useState<CatalogoItem | null>(null);
   const [confirmDelete, setConfirmDelete] = useState<CatalogoItem | null>(null);
   const [importProgress, setImportProgress] = useState<string | null>(null);
+  const [previewOpen, setPreviewOpen] = useState(false);
+  const [previewData, setPreviewData] = useState<ImportPreviewRow[]>([]);
+  const [previewHeaders, setPreviewHeaders] = useState<string[]>([]);
+  const [previewStats, setPreviewStats] = useState({
+    total: 0,
+    skipped: 0,
+    invalidNumbers: 0,
+    missingUbicacion: 0,
+    paisCount: 0,
+    orgCount: 0,
+    duplicates: 0,
+  });
+  const [toInsert, setToInsert] = useState<Record<string, unknown>[]>([]);
   const { isAdmin, user } = useAuth();
   const { addToast } = useToast();
   const { organizaciones, paises, companias, centrosCostos, organizacionesMap, paisesMap, companiasMap, centrosCostosMap } = useUbicaciones();
@@ -119,20 +134,38 @@ export default function CatalogoPage() {
         'Linea',
         'Grupo',
         'Cuenta',
-        'Descripción',
+        'Descripcion',
         'Saldo Normal',
         'Comercializadora',
-        'Balance / GyP',
-        'Clasificación',
-        'Clasificación 1',
-        'Clasificación 2',
+        'Balance_GyP',
+        'Clasificacion',
+        'Clasificacion 1',
+        'Clasificacion 2',
         'Orden Clasificacion',
-        'Organización',
-        'País',
-        'Compañía',
-        'Centro de Costo',
+        'Organizacion',
+        'Pais',
+        'Compania',
+        'Centro Costo',
       ];
-      const ws = xlsx.utils.aoa_to_sheet([headers]);
+      // Fila de ejemplo realista para que el usuario vea el formato
+      const ejemplo = [
+        7,
+        7,
+        '7.1.1.01.1.001',
+        'Descripción de la cuenta contable',
+        'Deudor',
+        'OLO',
+        'GYP',
+        'Gastos Operativos',
+        'Gastos Varios',
+        'Otros Gastos',
+        1,
+        'OLO',
+        'Colombia',
+        'BEVAL',
+        'Cofersa Central',
+      ];
+      const ws = xlsx.utils.aoa_to_sheet([headers, ejemplo]);
       const wb = xlsx.utils.book_new();
       xlsx.utils.book_append_sheet(wb, ws, 'Catalogo GYP');
       const wbout = xlsx.write(wb, { bookType: 'xlsx', type: 'array' });
@@ -150,6 +183,55 @@ export default function CatalogoPage() {
     }
   };
 
+  // --- UTILIDADES DE MATCHING ROBUSTO ---
+  const normalizeText = (text: string): string =>
+    text
+      .toLowerCase()
+      .trim()
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .replace(/\s+/g, ' ');
+
+  const findEntity = <T extends { nombre: string; codigo: string; id: string }>(
+    search: string,
+    entities: T[],
+  ): T | null => {
+    if (!search || !search.trim()) return null;
+    const normSearch = normalizeText(search);
+
+    // 1. Coincidencia exacta (nombre o código normalizado)
+    const exact = entities.find(
+      (e) => normalizeText(e.nombre) === normSearch || normalizeText(e.codigo) === normSearch,
+    );
+    if (exact) return exact;
+
+    // 2. Búsqueda original sin normalizar (case-insensitive)
+    const orig = entities.find(
+      (e) =>
+        e.nombre.toLowerCase().trim() === search.toLowerCase().trim() ||
+        e.codigo.toLowerCase().trim() === search.toLowerCase().trim(),
+    );
+    if (orig) return orig;
+
+    // 3. Contiene (el nombre/código de la entidad contiene el texto buscado)
+    const contains = entities.find(
+      (e) =>
+        normalizeText(e.nombre).includes(normSearch) ||
+        normalizeText(e.codigo).includes(normSearch),
+    );
+    if (contains) return contains;
+
+    // 4. Contiene inverso (el texto buscado contiene el nombre/código de la entidad)
+    const reverseContains = entities.find(
+      (e) =>
+        normSearch.includes(normalizeText(e.nombre)) ||
+        normSearch.includes(normalizeText(e.codigo)),
+    );
+    if (reverseContains) return reverseContains;
+
+    return null;
+  };
+
   // --- CARGADOR DE EXCEL ---
   const handleImportExcel = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -160,177 +242,285 @@ export default function CatalogoPage() {
       const data = await file.arrayBuffer();
       const workbook = xlsx.read(data, { type: 'array' });
       const sheet = workbook.Sheets[workbook.SheetNames[0]];
+
+      // 1. Leer headers EXACTOS de la primera fila del Excel
+      const range = xlsx.utils.decode_range(sheet['!ref'] || 'A1');
+      const headerRow: string[] = [];
+      for (let C = range.s.c; C <= range.e.c; ++C) {
+        const cell = sheet[xlsx.utils.encode_cell({ r: range.s.r, c: C })];
+        headerRow.push(cell ? String(cell.v || '') : '');
+      }
+      const rawHeaders = headerRow.filter((h) => h.trim() !== '');
+      setPreviewHeaders(rawHeaders);
+      console.log('Headers exactos del Excel:', rawHeaders);
+
+      // 2. Leer datos con defval
       const json = xlsx.utils.sheet_to_json(sheet, { defval: '' }) as Record<string, unknown>[];
 
-      // Buscador flexible de columnas
-      const getVal = (row: Record<string, unknown>, ...keys: string[]) => {
-        for (const key of keys) {
-          if (key in row && row[key] !== '' && row[key] !== null && row[key] !== undefined) {
-            return row[key];
+      if (json.length === 0) {
+        addToast('warning', 'El archivo está vacío o no tiene datos.');
+        return;
+      }
+
+      // 3. Normalizador de headers
+      const normalizeHeader = (h: string) =>
+        h
+          .toLowerCase()
+          .normalize('NFD')
+          .replace(/[\u0300-\u036f]/g, '')
+          .replace(/[\s\-_\/]+/g, '')
+          .trim();
+
+      // Mapeo de variantes normalizadas a los headers exactos
+      const headerMap: Record<string, string> = {};
+      rawHeaders.forEach((h) => {
+        const norm = normalizeHeader(h);
+        headerMap[norm] = h;
+      });
+      console.log('Mapeo de headers:', headerMap);
+
+      // 4. Buscador robusto
+      const getVal = (row: Record<string, unknown>, ...variants: string[]) => {
+        for (const v of variants) {
+          const norm = normalizeHeader(v);
+          const originalKey = headerMap[norm];
+          if (originalKey && originalKey in row && row[originalKey] !== '' && row[originalKey] !== null && row[originalKey] !== undefined) {
+            return row[originalKey];
           }
         }
         return '';
       };
 
-      const toInsert = json
-        .map((row) => {
-          // Buscamos por las columnas exactas del Excel del usuario
-          const cuenta = String(
-            getVal(
-              row,
-              'Cuenta',
-              'cuenta',
-              'CUENTA',
-              'Codigo',
-              'codigo',
-              'Código',
-              'CODIGO',
-              'Code',
-              'CODE',
-            ) || '',
-          ).trim();
-          const descripcion = String(
-            getVal(
-              row,
-              'Descripción',
-              'Descripcion',
-              'descripcion',
-              'DESCRIPCION',
-              'Desc',
-              'DESC',
-              'Nombre',
-              'NOMBRE',
-              'nombre',
-            ) || '',
-          ).trim();
-          if (!cuenta || !descripcion) return null;
-
-          const lineaRaw = getVal(row, 'Linea', 'Línea', 'linea', 'LINEA', 'Line', 'LINE');
-          const grupoRaw = getVal(row, 'Grupo', 'grupo', 'GRUPO', 'Group', 'GROUP');
-          const saldoNormal = String(
-            getVal(row, 'Saldo Normal', 'Saldo_Normal', 'saldo_normal', 'Saldo', 'SALDO', 'SALDO_NORMAL') || '',
-          ).trim();
-          const comercializadora = String(
-            getVal(row, 'Comercializadora', 'comercializadora', 'COMERCIALIZADORA', 'Comercial', 'COMERCIAL') || '',
-          ).trim();
-          const balanceGyp = String(
-            getVal(row, 'Balance / GyP', 'Balance / GYP', 'Balance/GyP', 'Balance/GYP', 'balance_gyp', 'Balance', 'BALANCE') || '',
-          ).trim();
-          const clasificacion = String(
-            getVal(
-              row,
-              'Clasificación',
-              'Clasificacion',
-              'clasificacion',
-              'CLASIFICACION',
-              'Clase',
-              'CLASE',
-              'Categoria',
-              'CATEGORIA',
-            ) || '',
-          ).trim();
-          const clasificacion1 = String(
-            getVal(
-              row,
-              'Clasificación 1',
-              'Clasificacion 1',
-              'Clasificacion_1',
-              'clasificacion_1',
-              'CLASIFICACION_1',
-              'Sub Clasificacion',
-              'Sub Clasificación',
-              'Subclasificacion',
-              'Subclasificación',
-            ) || '',
-          ).trim();
-          const clasificacion2 = String(
-            getVal(
-              row,
-              'Clasificación 2',
-              'Clasificacion 2',
-              'Clasificacion_2',
-              'clasificacion_2',
-              'CLASIFICACION_2',
-              'Sub Clasificacion 2',
-              'Subclasificacion 2',
-            ) || '',
-          ).trim();
-          const ordenRaw = getVal(
-            row,
-            'OrdenClasificacion',
-            'Orden Clasificacion',
-            'Orden Clasificación',
-            'orden_clasificacion',
-            'Orden_Clasificacion',
-            'Orden',
-            'ORDEN',
-            'ORDER',
-          );
-
-          // Ubicación: buscar por nombre o código
-          const orgNombre = String(getVal(row, 'Organización', 'Organizacion', 'organizacion', 'ORGANIZACION', 'Org', 'ORG') || '').trim();
-          const paisNombre = String(getVal(row, 'País', 'Pais', 'pais', 'PAIS', 'País', 'Country', 'COUNTRY') || '').trim();
-          const ciaNombre = String(getVal(row, 'Compañía', 'Compania', 'compania', 'COMPANIA', 'Cía', 'CIA', 'Cia', 'Company', 'COMPANY') || '').trim();
-          const ccNombre = String(getVal(row, 'Centro de Costo', 'Centro Costo', 'centro_costo', 'CENTRO_COSTO', 'CC', 'cc', 'Cost Center', 'COST_CENTER') || '').trim();
-
-          const orgId = orgNombre ? (organizaciones.find((o) => o.nombre.toLowerCase() === orgNombre.toLowerCase() || o.codigo.toLowerCase() === orgNombre.toLowerCase())?.id || null) : null;
-          const paisId = paisNombre ? (paises.find((p) => p.nombre.toLowerCase() === paisNombre.toLowerCase() || p.codigo.toLowerCase() === paisNombre.toLowerCase())?.id || null) : null;
-          const ciaId = ciaNombre ? (companias.find((c) => c.nombre.toLowerCase() === ciaNombre.toLowerCase() || c.codigo.toLowerCase() === ciaNombre.toLowerCase())?.id || null) : null;
-          const ccId = ccNombre ? (centrosCostos.find((cc) => cc.nombre.toLowerCase() === ccNombre.toLowerCase() || cc.codigo.toLowerCase() === ccNombre.toLowerCase())?.id || null) : null;
-
-          return {
-            linea: lineaRaw !== '' ? Number(lineaRaw) : null,
-            grupo: grupoRaw !== '' ? Number(grupoRaw) : null,
-            cuenta,
-            descripcion,
-            saldo_normal: saldoNormal,
-            comercializadora,
-            balance_gyp: balanceGyp,
-            clasificacion,
-            clasificacion_1: clasificacion1,
-            clasificacion_2: clasificacion2,
-            orden_clasificacion: ordenRaw !== '' ? Number(ordenRaw) : null,
-            activa: true,
-            ...(orgId ? { organizacion_id: orgId } : {}),
-            ...(paisId ? { pais_id: paisId } : {}),
-            ...(ciaId ? { compania_id: ciaId } : {}),
-            ...(ccId ? { centro_costo_id: ccId } : {}),
-          };
-        })
-        .filter(Boolean) as Record<string, unknown>[];
-
-      if (toInsert.length === 0) {
-        addToast('warning', 'No se encontraron registros válidos. Verificá que las columnas tengan Cuenta y Descripción.');
+      // 5. Validar que existe la columna Cuenta
+      const cuentaTest = getVal(json[0], 'Cuenta', 'cuenta', 'CUENTA');
+      if (cuentaTest === '') {
+        addToast('warning', `No se encontró la columna 'Cuenta'. Headers: ${rawHeaders.join(', ')}`);
         return;
       }
 
-      const BATCH_SIZE = 500;
+      let skipped = 0;
+      let invalidNumbers = 0;
+      let missingUbicacion = 0;
+      let paisCount = 0;
+      let orgCount = 0;
+      let duplicates = 0;
+      const parsed: ImportPreviewRow[] = [];
+      const batchToInsert: Record<string, unknown>[] = [];
+      // Detección de duplicados DENTRO del lote
+      const seenKeys = new Set<string>();
+
+      for (const row of json) {
+        const cuenta = String(getVal(row, 'Cuenta', 'cuenta', 'CUENTA', 'Codigo', 'codigo', 'CODIGO', 'Code', 'CODE') || '').trim();
+        const descripcion = String(getVal(row, 'Descripcion', 'descripcion', 'DESCRIPCION', 'Desc', 'DESC', 'Nombre', 'NOMBRE', 'nombre') || '').trim();
+        if (!cuenta || !descripcion) {
+          skipped++;
+          continue;
+        }
+
+        const lineaRaw = getVal(row, 'Linea', 'linea', 'LINEA', 'Line', 'LINE');
+        const grupoRaw = getVal(row, 'Grupo', 'grupo', 'GRUPO', 'Group', 'GROUP');
+        const saldoNormal = String(getVal(row, 'Saldo Normal', 'SaldoNormal', 'saldo_normal', 'Saldo', 'SALDO') || '').trim();
+        const comercializadora = String(getVal(row, 'Comercializadora', 'comercializadora', 'COMERCIALIZADORA', 'Comercial', 'COMERCIAL') || '').trim();
+        const balanceGyp = String(getVal(row, 'Balance GyP', 'BalanceGyP', 'balance_gyp', 'Balance', 'BALANCE', 'BalanceGYP') || '').trim();
+        const clasificacion = String(getVal(row, 'Clasificacion', 'clasificacion', 'CLASIFICACION', 'Clase', 'CLASE', 'Categoria', 'CATEGORIA') || '').trim();
+        const clasificacion1 = String(getVal(row, 'Clasificacion 1', 'Clasificacion1', 'clasificacion_1', 'CLASIFICACION_1', 'Sub Clasificacion', 'Subclasificacion') || '').trim();
+        const clasificacion2 = String(getVal(row, 'Clasificacion 2', 'Clasificacion2', 'clasificacion_2', 'CLASIFICACION_2', 'Sub Clasificacion 2', 'Subclasificacion 2') || '').trim();
+        const ordenRaw = getVal(row, 'Orden Clasificacion', 'OrdenClasificacion', 'orden_clasificacion', 'Orden', 'ORDEN', 'ORDER');
+
+        // Ubicación con matching ROBUSTO
+        const orgNombre = String(getVal(row, 'Organizacion', 'organizacion', 'ORGANIZACION', 'Org', 'ORG') || '').trim();
+        const paisNombre = String(getVal(row, 'Pais', 'pais', 'PAIS', 'Country', 'COUNTRY') || '').trim();
+        const ciaNombre = String(getVal(row, 'Compania', 'compania', 'COMPANIA', 'Cia', 'CIA', 'Company', 'COMPANY') || '').trim();
+        const ccNombre = String(getVal(row, 'Centro Costo', 'CentroCosto', 'centro_costo', 'CENTRO_COSTO', 'CC', 'cc', 'Cost Center', 'COSTCENTER') || '').trim();
+
+        const orgMatch = findEntity(orgNombre, organizaciones);
+        const paisMatch = findEntity(paisNombre, paises);
+        let ciaMatch = findEntity(ciaNombre, companias);
+        const ccMatch = findEntity(ccNombre, centrosCostos);
+
+        // Si no encontró compañía por matching directo, intentar inferirla del contexto
+        if (!ciaMatch && ciaNombre) {
+          // Intentar buscar el nombre de compañía dentro del nombre de centro de costo
+          if (ccNombre) {
+            for (const c of companias) {
+              if (
+                normalizeText(ccNombre).includes(normalizeText(c.nombre)) ||
+                normalizeText(ccNombre).includes(normalizeText(c.codigo))
+              ) {
+                ciaMatch = c;
+                break;
+              }
+            }
+          }
+          // Si sigue sin encontrar, intentar por el país (compañías que pertenecen a ese país)
+          if (!ciaMatch && paisMatch) {
+            ciaMatch = companias.find(
+              (c) => (c as Compania).pais_id === paisMatch.id && normalizeText(c.nombre) === normalizeText(ciaNombre),
+            ) || null;
+            if (!ciaMatch) {
+              ciaMatch = companias.find(
+                (c) => (c as Compania).pais_id === paisMatch.id && normalizeText(c.nombre).includes(normalizeText(ciaNombre)),
+              ) || null;
+            }
+          }
+        }
+
+        const orgId = orgMatch?.id || null;
+        const paisId = paisMatch?.id || null;
+        const ciaId = ciaMatch?.id || null;
+        const ccId = ccMatch?.id || null;
+
+        // Contar errores de ubicación
+        if (paisNombre && !paisId) missingUbicacion++;
+        if (paisId) paisCount++;
+        if (orgId) orgCount++;
+
+        // Validar: si tiene compañía en Excel pero no se encontró, marcamos error
+        let rowError: string | null = null;
+        let rowValido = true;
+        const errores: string[] = [];
+
+        if (orgNombre && !orgId) errores.push(`Org "${orgNombre}" no encontrada`);
+        if (paisNombre && !paisId) errores.push(`País "${paisNombre}" no encontrado`);
+        if (!ciaNombre) errores.push('Compañía requerida');
+        else if (!ciaId) errores.push(`Cía "${ciaNombre}" no encontrada`);
+        if (ccNombre && !ccId) errores.push(`CC "${ccNombre}" no encontrado`);
+
+        // Detectar duplicados DENTRO del lote (llave compuesta)
+        const compositeKey = `${cuenta}||${orgId || 'NULL'}||${paisId || 'NULL'}||${ciaId || 'NULL'}`;
+        if (seenKeys.has(compositeKey)) {
+          errores.push('DUPLICADO en el archivo');
+          duplicates++;
+        } else {
+          seenKeys.add(compositeKey);
+        }
+
+        if (errores.length > 0) {
+          rowError = errores.join('; ');
+          rowValido = false;
+        }
+
+        const safeNumber = (raw: unknown) => {
+          if (raw === '' || raw === null || raw === undefined) return null;
+          const n = Number(raw);
+          if (Number.isNaN(n)) {
+            invalidNumbers++;
+            return null;
+          }
+          return n;
+        };
+
+        const rowData: Record<string, unknown> = {
+          linea: safeNumber(lineaRaw),
+          grupo: safeNumber(grupoRaw),
+          cuenta,
+          descripcion,
+          saldo_normal: saldoNormal,
+          comercializadora,
+          balance_gyp: balanceGyp,
+          clasificacion,
+          clasificacion_1: clasificacion1,
+          clasificacion_2: clasificacion2,
+          orden_clasificacion: safeNumber(ordenRaw),
+          activa: true,
+          ...(orgId ? { organizacion_id: orgId } : {}),
+          ...(paisId ? { pais_id: paisId } : {}),
+          ...(ciaId ? { compania_id: ciaId } : {}),
+          ...(ccId ? { centro_costo_id: ccId } : {}),
+        };
+
+        if (rowValido) {
+          batchToInsert.push(rowData);
+        }
+
+        parsed.push({
+          cuenta,
+          descripcion,
+          clasificacion,
+          clasificacion_1: clasificacion1,
+          clasificacion_2: clasificacion2,
+          linea: safeNumber(lineaRaw),
+          grupo: safeNumber(grupoRaw),
+          saldo_normal: saldoNormal,
+          comercializadora,
+          balance_gyp: balanceGyp,
+          orden_clasificacion: safeNumber(ordenRaw),
+          pais_nombre: paisNombre,
+          pais_id: paisId,
+          org_nombre: orgNombre,
+          org_id: orgId,
+          cia_nombre: ciaNombre,
+          cia_id: ciaId,
+          cc_nombre: ccNombre,
+          cc_id: ccId,
+          valido: rowValido,
+          error: rowError,
+        });
+      }
+
+      setPreviewData(parsed);
+      setPreviewStats({
+        total: json.length,
+        skipped,
+        invalidNumbers,
+        missingUbicacion,
+        paisCount,
+        orgCount,
+        duplicates,
+      });
+      setToInsert(batchToInsert);
+      setImportProgress(null);
+      setPreviewOpen(true);
+    } catch (err) {
+      addToast('error', 'Error al importar: ' + (err as Error).message);
+      setImportProgress(null);
+    } finally {
+      e.target.value = '';
+    }
+  };
+
+  const handleConfirmImport = async () => {
+    if (toInsert.length === 0) {
+      addToast('warning', 'No hay registros para importar.');
+      return;
+    }
+    setImportProgress('Importando...');
+    try {
+      const BATCH_SIZE = 200;
       let imported = 0;
       let failed = 0;
+      let lastError: string | null = null;
 
       for (let i = 0; i < toInsert.length; i += BATCH_SIZE) {
         const batch = toInsert.slice(i, i + BATCH_SIZE);
         setImportProgress(`Importando ${Math.min(i + batch.length, toInsert.length)} de ${toInsert.length} registros...`);
-        const { error } = await supabase.from('catalogo_gyp').upsert(batch, { onConflict: 'cuenta' });
+        const { error } = await supabase.from('catalogo_gyp').upsert(batch, { onConflict: 'cuenta,organizacion_id,pais_id,compania_id' });
         if (error) {
           failed += batch.length;
+          lastError = error.message;
           console.error('Error en batch:', error);
         } else {
           imported += batch.length;
         }
       }
 
+      const mensajes: string[] = [];
+      if (imported > 0) mensajes.push(`${imported} importadas/actualizadas`);
+      if (failed > 0) mensajes.push(`${failed} fallaron`);
+
       if (failed > 0) {
-        addToast('error', `${imported} importadas, ${failed} fallaron.`);
+        addToast('error', mensajes.join('. ') + (lastError ? `. Error: ${lastError}` : ''));
       } else {
-        addToast('success', `${imported} cuentas importadas/actualizadas`);
+        addToast('success', mensajes.join('. ') || 'Importación completada');
       }
+      setPreviewOpen(false);
+      setPreviewData([]);
+      setToInsert([]);
       fetchData();
     } catch (err) {
       addToast('error', 'Error al importar: ' + (err as Error).message);
     } finally {
       setImportProgress(null);
-      e.target.value = '';
     }
   };
 
@@ -444,12 +634,12 @@ export default function CatalogoPage() {
             <>
               <button
                 onClick={handleDownloadTemplate}
-                className="inline-flex items-center gap-2 rounded-lg border border-slate-300 bg-white px-4 py-2.5 text-sm font-medium text-slate-700 hover:bg-slate-50 transition-colors whitespace-nowrap"
+                className="inline-flex items-center gap-2 rounded-lg border border-emerald-200 bg-emerald-50 px-5 py-3 text-sm font-semibold text-emerald-700 hover:bg-emerald-100 active:scale-95 transition-all whitespace-nowrap cursor-pointer"
               >
                 <i className="ri-download-line w-5 h-5 flex items-center justify-center"></i>
                 Descargar Plantilla
               </button>
-              <label className="inline-flex items-center gap-2 rounded-lg bg-slate-800 px-4 py-2.5 text-sm font-medium text-white hover:bg-slate-700 cursor-pointer transition-colors whitespace-nowrap">
+              <label className="inline-flex items-center gap-2 rounded-lg bg-amber-500 px-5 py-3 text-sm font-semibold text-white hover:bg-amber-600 active:scale-95 cursor-pointer transition-all whitespace-nowrap">
                 <i className="ri-file-upload-line w-5 h-5 flex items-center justify-center"></i>
                 {importProgress || 'Importar Excel'}
                 <input
@@ -465,7 +655,7 @@ export default function CatalogoPage() {
                   setEditing(null);
                   setModalOpen(true);
                 }}
-                className="inline-flex items-center gap-2 rounded-lg bg-emerald-600 px-4 py-2.5 text-sm font-medium text-white hover:bg-emerald-700 transition-colors whitespace-nowrap"
+                className="inline-flex items-center gap-2 rounded-lg bg-slate-800 px-5 py-3 text-sm font-semibold text-white hover:bg-slate-900 active:scale-95 transition-all whitespace-nowrap cursor-pointer"
               >
                 <i className="ri-add-line w-5 h-5 flex items-center justify-center"></i>
                 Nueva Cuenta
@@ -812,6 +1002,25 @@ export default function CatalogoPage() {
         confirmText="Eliminar"
         cancelText="Cancelar"
         variant="danger"
+      />
+
+      <ImportPreviewModal
+        isOpen={previewOpen}
+        onClose={() => setPreviewOpen(false)}
+        onConfirm={handleConfirmImport}
+        headers={previewHeaders}
+        data={previewData}
+        total={previewStats.total}
+        skipped={previewStats.skipped}
+        invalidNumbers={previewStats.invalidNumbers}
+        missingUbicacion={previewStats.missingUbicacion}
+        paisCount={previewStats.paisCount}
+        orgCount={previewStats.orgCount}
+        duplicates={previewStats.duplicates}
+        loading={!!importProgress}
+        paises={paises}
+        companias={companias}
+        centrosCostos={centrosCostos}
       />
     </div>
   );

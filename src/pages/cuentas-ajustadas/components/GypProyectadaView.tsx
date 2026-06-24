@@ -39,6 +39,7 @@ export default function GypProyectadaView({
   const [premisas, setPremisas] = useState<PremisaProyeccion[]>([]);
   const [ventas, setVentas] = useState<VentaProyeccion[]>([]);
   const [loading, setLoading] = useState(true);
+  const [loadingProgress, setLoadingProgress] = useState<{ fetched: number; etapa: string } | null>(null);
   const [search, setSearch] = useState('');
   const [filtroPais, setFiltroPais] = useState('');
   const [filtroCompania, setFiltroCompania] = useState('');
@@ -55,13 +56,18 @@ export default function GypProyectadaView({
 
   const fetchData = useCallback(async () => {
     setLoading(true);
+    setLoadingProgress({ fetched: 0, etapa: 'Cargando premisas y ventas...' });
     const [premRes, ventRes] = await Promise.all([
       supabase.from('premisas_proyeccion').select('*').order('cuenta_contable', { ascending: true }).order('anio', { ascending: false }).order('mes', { ascending: false }),
       supabase.from('ventas_proyeccion').select('*').order('anio', { ascending: false }).order('mes', { ascending: false }),
     ]);
-    if (premRes.data) setPremisas(premRes.data as PremisaProyeccion[]);
-    if (ventRes.data) setVentas(ventRes.data as VentaProyeccion[]);
+    let fetched = 0;
+    if (premRes.data) { setPremisas(premRes.data as PremisaProyeccion[]); fetched += premRes.data.length; }
+    if (ventRes.data) { setVentas(ventRes.data as VentaProyeccion[]); fetched += ventRes.data.length; }
+    setLoadingProgress({ fetched, etapa: 'Datos cargados' });
     setLoading(false);
+    // Clear progress after a brief moment so it's visible
+    setTimeout(() => setLoadingProgress(null), 600);
   }, []);
 
   useEffect(() => { fetchData(); }, [fetchData]);
@@ -325,6 +331,27 @@ export default function GypProyectadaView({
           </div>
         </div>
       </div>
+
+      {/* Loading Progress Bar */}
+      {loadingProgress && (
+        <div className="rounded-xl bg-background-50 border border-background-200 p-4 space-y-2">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <i className="ri-loader-4-line animate-spin w-5 h-5 flex items-center justify-center text-primary-500"></i>
+              <span className="text-sm font-medium text-foreground-900">{loadingProgress.etapa}</span>
+            </div>
+            <span className="text-xs text-foreground-600 tabular-nums">
+              {loadingProgress.fetched} registros cargados
+            </span>
+          </div>
+          <div className="w-full h-2 bg-background-200 rounded-full overflow-hidden">
+            <div
+              className={`h-full bg-primary-500 rounded-full transition-all duration-300 ease-out ${loadingProgress.etapa === 'Datos cargados' ? '' : 'animate-pulse'}`}
+              style={{ width: loadingProgress.etapa === 'Datos cargados' ? '100%' : '60%' }}
+            />
+          </div>
+        </div>
+      )}
 
       {/* Stats */}
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">

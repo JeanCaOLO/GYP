@@ -11,6 +11,8 @@ import { usePermissions } from '@/hooks/usePermissions';
 import CuentaAjustadaModal from './components/CuentaAjustadaModal';
 import EditMontosMensualesModal from './components/EditMontosMensualesModal';
 import GypProyectadaView from './components/GypProyectadaView';
+import AsientosPreviewModal from './components/AsientosPreviewModal';
+import type { AsientoPreviewRow } from './components/AsientosPreviewModal';
 
 const PAGE_SIZE = 50;
 const ANIO_DEFAULT = 2026;
@@ -33,6 +35,7 @@ export default function CuentasAjustadasPage() {
   const [montosMensuales, setMontosMensuales] = useState<CuentaAjustadaMontoMensual[]>([]);
   const [catalogoGyp, setCatalogoGyp] = useState<CatalogoItem[]>([]);
   const [loading, setLoading] = useState(true);
+  const [loadingProgress, setLoadingProgress] = useState<{ fetched: number; total: number | null; etapa: string } | null>(null);
   const [search, setSearch] = useState('');
   const [filtroEstado, setFiltroEstado] = useState<'all' | 'active' | 'inactive'>('all');
   const [filtroValidacion, setFiltroValidacion] = useState<'all' | 'existente' | 'no_existente' | 'repetida'>('all');
@@ -50,6 +53,11 @@ export default function CuentasAjustadasPage() {
   const [editMesesOpen, setEditMesesOpen] = useState(false);
   const [editingMesesItem, setEditingMesesItem] = useState<CuentaAjustada | null>(null);
   const [recalculando, setRecalculando] = useState(false);
+  const [previewOpen, setPreviewOpen] = useState(false);
+  const [previewData, setPreviewData] = useState<AsientoPreviewRow[]>([]);
+  const [previewHeaders, setPreviewHeaders] = useState<string[]>([]);
+  const [previewToInsert, setPreviewToInsert] = useState<Record<string, unknown>[]>([]);
+  const [previewLoading, setPreviewLoading] = useState(false);
   const { isAdmin } = useAuth();
   const { addToast } = useToast();
   const { factoresMap } = useFactores();
@@ -59,28 +67,84 @@ export default function CuentasAjustadasPage() {
 
   const fetchData = useCallback(async () => {
     setLoading(true);
-    let cuentasQuery = supabase.from('cuentas_ajustadas').select('*').order('cuenta_contable', { ascending: true });
-    let montosQuery = supabase.from('cuentas_ajustadas_montos_mensuales').select('*');
-    if (!isSuperAdmin && userScope.pais_id) {
-      cuentasQuery = cuentasQuery.eq('pais_id', userScope.pais_id);
-      montosQuery = montosQuery.eq('pais_id', userScope.pais_id);
-    } else if (!isSuperAdmin && userScope.compania_id) {
-      cuentasQuery = cuentasQuery.eq('compania_id', userScope.compania_id);
-      montosQuery = montosQuery.eq('compania_id', userScope.compania_id);
-    } else if (!isSuperAdmin && userScope.organizacion_id) {
-      cuentasQuery = cuentasQuery.eq('organizacion_id', userScope.organizacion_id);
-      montosQuery = montosQuery.eq('organizacion_id', userScope.organizacion_id);
+    setLoadingProgress({ fetched: 0, total: null, etapa: 'Conectando...' });
+
+    // Helper to paginate through all results (Supabase default limit is 1000)
+    const fetchAll = async <T,>(
+      queryFn: (from: number, to: number) => ReturnType<typeof supabase.from>,
+      label: string,
+    ) => {
+      const all: T[] = [];
+      const PAGE = 1000;
+      let from = 0;
+      let hasMore = true;
+      let estimatedTotal: number | null = null;
+      while (hasMore) {
+        const q = queryFn(from, from + PAGE - 1);
+        const { data, error, count } = await q;
+        if (error) throw error;
+        if (data && data.length > 0) {
+          // On first page, get the estimated count from PostgREST
+          if (from === 0 && count !== null && count !== undefined) {
+            estimatedTotal = count;
+          }
+          all.push(...(data as T[]));
+          from += PAGE;
+          setLoadingProgress({
+            fetched: all.length,
+            total: estimatedTotal,
+            etapa: `Cargando ${label}...`,
+          });
+          if (data.length < PAGE) hasMore = false;
+        } else {
+          hasMore = false;
+        }
+      }
+      return all;
+    };
+
+    const makeQuery = (from: number, to: number) => {
+      let q = supabase.from('cuentas_ajustadas').select('*', { count: 'exact' }).order('cuenta_contable', { ascending: true }).order('id', { ascending: true }).range(from, to);
+      if (!isSuperAdmin && userScope.pais_id) {
+        q = q.eq('pais_id', userScope.pais_id);
+      } else if (!isSuperAdmin && userScope.compania_id) {
+        q = q.eq('compania_id', userScope.compania_id);
+      } else if (!isSuperAdmin && userScope.organizacion_id) {
+        q = q.eq('organizacion_id', userScope.organizacion_id);
+      }
+      return q;
+    };
+
+    const makeMontosQuery = (from: number, to: number) => {
+      let q = supabase.from('cuentas_ajustadas_montos_mensuales').select('*', { count: 'exact' }).order('id', { ascending: true }).range(from, to);
+      if (!isSuperAdmin && userScope.pais_id) {
+        q = q.eq('pais_id', userScope.pais_id);
+      } else if (!isSuperAdmin && userScope.compania_id) {
+        q = q.eq('compania_id', userScope.compania_id);
+      } else if (!isSuperAdmin && userScope.organizacion_id) {
+        q = q.eq('organizacion_id', userScope.organizacion_id);
+      }
+      return q;
+    };
+
+    const catQuery = supabase.from('catalogo_gyp').select('id, cuenta, descripcion').eq('activa', true);
+
+    try {
+      const [cuentasData, catRes, montosData] = await Promise.all([
+        fetchAll<CuentaAjustada>(makeQuery, 'Cuentas'),
+        catQuery,
+        fetchAll<CuentaAjustadaMontoMensual>(makeMontosQuery, 'Montos'),
+      ]);
+      setCuentas(cuentasData);
+      if (catRes.data) setCatalogoGyp(catRes.data as CatalogoItem[]);
+      setMontosMensuales(montosData);
+    } catch (err) {
+      console.error('Error fetching data:', err);
+    } finally {
+      setLoading(false);
+      setLoadingProgress(null);
     }
-    const [cuentasRes, catRes, montosRes] = await Promise.all([
-      cuentasQuery,
-      supabase.from('catalogo_gyp').select('id, cuenta, descripcion').eq('activa', true),
-      montosQuery,
-    ]);
-    if (cuentasRes.data) setCuentas(cuentasRes.data as CuentaAjustada[]);
-    if (catRes.data) setCatalogoGyp(catRes.data as CatalogoItem[]);
-    if (montosRes.data) setMontosMensuales(montosRes.data as CuentaAjustadaMontoMensual[]);
-    setLoading(false);
-  }, []);
+  }, [isSuperAdmin, userScope.pais_id, userScope.compania_id, userScope.organizacion_id]);
 
   useEffect(() => {
     fetchData();
@@ -170,7 +234,7 @@ export default function CuentasAjustadasPage() {
 
   const handleDownloadTemplate = () => {
     const headers = [
-      'CUENTA_CONTABLE', 'DESCRIPCION', 'TIPO_SALDO', 'AJUSTE', 'FECHA',
+      'ASIENTO', 'CUENTA_CONTABLE', 'DESCRIPCION', 'TIPO_SALDO', 'AJUSTE', 'FECHA',
       'VISTA', 'CATEGORIA', 'ORGANIZACION', 'PAIS', 'COMPANIA', 'CENTRO_COSTO',
     ];
 
@@ -205,6 +269,9 @@ export default function CuentasAjustadasPage() {
       const sheet = workbook.Sheets[workbook.SheetNames[0]];
       const json = xlsx.utils.sheet_to_json(sheet, { defval: '' }) as Record<string, unknown>[];
 
+      // Detect headers
+      const headers = json.length > 0 ? Object.keys(json[0]).filter((k) => String(json[0][k] !== undefined)) : [];
+
       const getVal = (row: Record<string, unknown>, ...keys: string[]) => {
         for (const key of keys) {
           if (key in row && row[key] !== '' && row[key] !== null && row[key] !== undefined) {
@@ -214,7 +281,6 @@ export default function CuentasAjustadasPage() {
         return '';
       };
 
-      // Build reverse lookup maps: normalized name/code → ID
       const normalizeStr = (s: string) => String(s).trim().toLowerCase();
       const orgLookup = new Map<string, string>();
       organizaciones.forEach((o) => {
@@ -237,88 +303,186 @@ export default function CuentasAjustadasPage() {
         if ((c as any).codigo) ccLookup.set(normalizeStr((c as any).codigo), c.id);
       });
 
-      const toInsert = json
-        .map((row) => {
-          const cuenta_contable = String(
-            getVal(row, 'Cuenta', 'cuenta', 'CUENTA', 'CUENTA_CONTABLE', 'cuenta_contable', 'Codigo', 'codigo', 'Código', 'CODE', 'Account') || ''
-          ).trim();
-          const descripcion = String(
-            getVal(row, 'Descripción', 'Descripcion', 'descripcion', 'DESCRIPCION', 'Desc', 'DESC', 'Nombre', 'NOMBRE') || ''
-          ).trim();
-          const tipoSaldo = String(
-            getVal(row, 'Tipo Saldo', 'tipo_saldo', 'Tipo', 'TIPO', 'Saldo', 'SALDO', 'Nature') || ''
-          ).trim().toLowerCase();
-          const ajusteVal = Number(
-            getVal(row, 'Ajuste', 'ajuste', 'AJUSTE', 'Saldo', 'saldo', 'SALDO', 'Monto', 'MONTO', 'Amount', 'AMOUNT') || 0
-          );
-          const fechaRaw = getVal(row, 'Fecha', 'fecha', 'FECHA', 'Date', 'DATE');
-          const fechaVal = fechaRaw ? String(fechaRaw).trim() : null;
-          const vistaVal = String(getVal(row, 'Vista', 'vista', 'VISTA', 'View', 'VIEW') || '').trim();
-          const categoriaPadre = String(getVal(row, 'Categoria', 'categoria', 'CATEGORIA', 'Categoria Padre', 'categoria_padre', 'CATEGORIA_PADRE') || '').trim();
-          const orgNombre = String(getVal(row, 'ORGANIZACION', 'Organizacion', 'organizacion', 'Org', 'ORG') || '').trim();
-          const paisNombre = String(getVal(row, 'PAIS', 'Pais', 'pais', 'País', 'PAÍS') || '').trim();
-          const ciaNombre = String(getVal(row, 'COMPANIA', 'Compania', 'compania', 'Cia', 'CIA', 'Compañía', 'COMPAÑÍA') || '').trim();
-          const ccNombre = String(getVal(row, 'CENTRO_COSTO', 'Centro_Costo', 'centro_costo', 'Centro Costo', 'CC', 'Cc') || '').trim();
-          const organizacion_id = orgNombre ? orgLookup.get(normalizeStr(orgNombre)) || null : null;
-          const pais_id = paisNombre ? paisLookup.get(normalizeStr(paisNombre)) || null : null;
-          const compania_id = ciaNombre ? ciaLookup.get(normalizeStr(ciaNombre)) || null : null;
-          const centro_costo_id = ccNombre ? ccLookup.get(normalizeStr(ccNombre)) || null : null;
-          if (!cuenta_contable || !descripcion) return null;
-          return {
+      // Track duplicates by asiento_id within the batch
+      const asientoCount = new Map<string, number>();
+
+      let skipped = 0;
+      let missingCia = 0;
+
+      const previewRows: AsientoPreviewRow[] = [];
+      const toInsert: Record<string, unknown>[] = [];
+
+      json.forEach((row) => {
+        const cuenta_contable = String(
+          getVal(row, 'Cuenta', 'cuenta', 'CUENTA', 'CUENTA_CONTABLE', 'cuenta_contable', 'Codigo', 'codigo', 'Código', 'CODE', 'Account') || ''
+        ).trim();
+        const descripcion = String(
+          getVal(row, 'Descripción', 'Descripcion', 'descripcion', 'DESCRIPCION', 'Desc', 'DESC', 'Nombre', 'NOMBRE') || ''
+        ).trim();
+        const tipoSaldo = String(
+          getVal(row, 'Tipo Saldo', 'tipo_saldo', 'Tipo', 'TIPO', 'Saldo', 'SALDO', 'Nature') || ''
+        ).trim().toLowerCase();
+        const ajusteVal = Number(
+          getVal(row, 'Ajuste', 'ajuste', 'AJUSTE', 'Monto', 'MONTO', 'Amount', 'AMOUNT') || 0
+        );
+        const fechaRaw = getVal(row, 'Fecha', 'fecha', 'FECHA', 'Date', 'DATE');
+        // Convierte serial de Excel (ej. 45658) a YYYY-MM-DD, o parsea string de fecha
+        let fechaVal: string | null = null;
+        if (fechaRaw !== '' && fechaRaw !== null && fechaRaw !== undefined) {
+          const num = Number(fechaRaw);
+          if (!isNaN(num) && num > 40000 && num < 80000) {
+            // Es un serial de Excel: días desde 1900-01-01 (con el bug de año bisiesto)
+            const utcDays = num - 25569; // días desde 1970-01-01
+            const date = new Date(utcDays * 86400 * 1000);
+            fechaVal = date.toISOString().split('T')[0];
+          } else {
+            const str = String(fechaRaw).trim();
+            const parsed = new Date(str);
+            if (!isNaN(parsed.getTime())) {
+              fechaVal = parsed.toISOString().split('T')[0];
+            }
+          }
+        }
+        const vistaVal = String(getVal(row, 'Vista', 'vista', 'VISTA', 'View', 'VIEW') || '').trim();
+        const categoriaPadre = String(getVal(row, 'Categoria', 'categoria', 'CATEGORIA', 'Categoria Padre', 'categoria_padre', 'CATEGORIA_PADRE') || '').trim();
+        const asientoId = String(
+          getVal(row, 'Asiento', 'asiento', 'ASIENTO', 'Asiento ID', 'asiento_id', 'ASIENTO_ID', 'Número Asiento', 'Numero Asiento', 'Nro Asiento') || ''
+        ).trim();
+        const orgNombre = String(getVal(row, 'ORGANIZACION', 'Organizacion', 'organizacion', 'Org', 'ORG') || '').trim();
+        const paisNombre = String(getVal(row, 'PAIS', 'Pais', 'pais', 'País', 'PAÍS') || '').trim();
+        const ciaNombre = String(getVal(row, 'COMPANIA', 'Compania', 'compania', 'Cia', 'CIA', 'Compañía', 'COMPAÑÍA') || '').trim();
+        const ccNombre = String(getVal(row, 'CENTRO_COSTO', 'Centro_Costo', 'centro_costo', 'Centro Costo', 'CC', 'Cc') || '').trim();
+
+        const organizacion_id = orgNombre ? orgLookup.get(normalizeStr(orgNombre)) || null : null;
+        const pais_id = paisNombre ? paisLookup.get(normalizeStr(paisNombre)) || null : null;
+        const compania_id = ciaNombre ? ciaLookup.get(normalizeStr(ciaNombre)) || null : null;
+        const centro_costo_id = ccNombre ? ccLookup.get(normalizeStr(ccNombre)) || null : null;
+
+        // Validation
+        const errores: string[] = [];
+        if (!cuenta_contable || !descripcion) {
+          skipped++;
+          errores.push('Sin cuenta o descripción');
+        }
+        if (!compania_id) {
+          missingCia++;
+          errores.push('Sin compañía');
+        }
+
+        // Check for asiento_id duplicates within the batch
+        let isDuplicate = false;
+        if (asientoId) {
+          const count = (asientoCount.get(asientoId) || 0) + 1;
+          asientoCount.set(asientoId, count);
+          if (count > 1) {
+            isDuplicate = true;
+            errores.push('Asiento duplicado en lote');
+          }
+        }
+
+        const valido = errores.length === 0;
+
+        previewRows.push({
+          asiento_id: asientoId || '',
+          cuenta_contable: cuenta_contable || '',
+          descripcion_ajuste: descripcion || '',
+          tipo_saldo: tipoSaldo.includes('deudor') ? 'deudor' : 'acreedor',
+          ajuste: ajusteVal || 0,
+          fecha: fechaVal,
+          vista: vistaVal || '',
+          categoria_padre: categoriaPadre || '',
+          org_nombre: orgNombre,
+          org_id: organizacion_id,
+          pais_nombre: paisNombre,
+          pais_id,
+          cia_nombre: ciaNombre,
+          cia_id: compania_id,
+          cc_nombre: ccNombre,
+          cc_id: centro_costo_id,
+          valido,
+          error: errores.join('; ') || null,
+        });
+
+        if (valido) {
+          toInsert.push({
             cuenta_contable,
             descripcion_ajuste: descripcion,
             tipo_saldo: tipoSaldo.includes('deudor') ? 'deudor' : 'acreedor',
             ajuste: ajusteVal || 0,
             fecha: fechaVal,
-            vista: ['GYP', 'GYP Gerencial'].includes(vistaVal) ? vistaVal : null,
+            vista: vistaVal || null,
             categoria_padre: categoriaPadre || null,
+            asiento_id: asientoId || null,
             organizacion_id: organizacion_id || null,
             pais_id: pais_id || null,
             compania_id: compania_id || null,
             centro_costo_id: centro_costo_id || null,
             es_cuenta_padre: false,
             activa: true,
-          };
-        })
-        .filter(Boolean) as { cuenta_contable: string; descripcion_ajuste: string; tipo_saldo: 'acreedor' | 'deudor'; ajuste: number; fecha: string | null; vista: string | null; categoria_padre: string | null; organizacion_id: string | null; pais_id: string | null; compania_id: string | null; centro_costo_id: string | null; es_cuenta_padre: boolean; activa: boolean }[];
+          });
+        }
+      });
 
-      if (toInsert.length === 0) {
-        addToast('warning', 'No se encontraron registros válidos. Verificá las columnas.');
+      const duplicates = Array.from(asientoCount.entries()).filter(([, count]) => count > 1).length;
+
+      if (previewRows.length === 0) {
+        addToast('warning', 'No se encontraron registros en el archivo. Verificá las columnas.');
         return;
       }
 
+      setPreviewData(previewRows);
+      setPreviewHeaders(headers);
+      setPreviewToInsert(toInsert);
+      setPreviewOpen(true);
+    } catch (err) {
+      addToast('error', 'Error al leer el archivo: ' + (err as Error).message);
+    } finally {
+      setImportProgress(null);
+      e.target.value = '';
+    }
+  };
+
+  const handleConfirmImport = async () => {
+    setPreviewLoading(true);
+    try {
       const BATCH_SIZE = 500;
       let imported = 0;
       let failed = 0;
       let duplicados = 0;
 
-      // GYP Gerencial ya no tiene restricción única — se insertan siempre
-      const gypRows = toInsert.filter((r) => r.vista !== 'GYP Gerencial');
-      const gerencialRows = toInsert.filter((r) => r.vista === 'GYP Gerencial');
+      const conAsiento = previewToInsert.filter((r) => r.asiento_id);
+      const sinAsiento = previewToInsert.filter((r) => !r.asiento_id);
 
-      for (let i = 0; i < gypRows.length; i += BATCH_SIZE) {
-        const batch = gypRows.slice(i, i + BATCH_SIZE);
-        setImportProgress(`Importando ${Math.min(i + batch.length, gypRows.length)} de ${gypRows.length} registros...`);
-        const { error } = await supabase.from('cuentas_ajustadas').upsert(batch, { onConflict: 'cuenta_contable,vista' });
+      for (let i = 0; i < conAsiento.length; i += BATCH_SIZE) {
+        const batch = conAsiento.slice(i, i + BATCH_SIZE);
+        setImportProgress(`Importando ${Math.min(i + batch.length, conAsiento.length)} de ${conAsiento.length} registros...`);
+        const { error } = await supabase.from('cuentas_ajustadas').upsert(batch, { onConflict: 'asiento_id' });
         if (error) {
           if (error.message.includes('duplicate') || error.code === '23505') {
             duplicados += batch.length;
           } else {
             failed += batch.length;
           }
-          console.error('Error en batch:', error);
+          console.error('Error en batch con asiento:', error);
         } else {
           imported += batch.length;
         }
       }
 
-      for (let i = 0; i < gerencialRows.length; i += BATCH_SIZE) {
-        const batch = gerencialRows.slice(i, i + BATCH_SIZE);
-        setImportProgress(`Importando GYP Gerencial ${Math.min(i + batch.length, gerencialRows.length)} de ${gerencialRows.length} registros...`);
+      for (let i = 0; i < sinAsiento.length; i += BATCH_SIZE) {
+        const rawBatch = sinAsiento.slice(i, i + BATCH_SIZE);
+        const batch = rawBatch.map(({ asiento_id: _aid, ...rest }) => rest);
+        setImportProgress(`Importando sin-asiento ${Math.min(i + batch.length, sinAsiento.length)} de ${sinAsiento.length} registros...`);
         const { error } = await supabase.from('cuentas_ajustadas').insert(batch);
         if (error) {
-          failed += batch.length;
-          console.error('Error en batch GYP Gerencial:', error);
+          console.error('Error en batch sin asiento:', error);
+          console.error('Muestra del primer registro del batch:', JSON.stringify(batch[0]));
+          console.error('Total en batch:', batch.length);
+          if (error.message.includes('duplicate') || error.code === '23505') {
+            duplicados += batch.length;
+          } else {
+            failed += batch.length;
+          }
         } else {
           imported += batch.length;
         }
@@ -334,7 +498,8 @@ export default function CuentasAjustadasPage() {
       addToast('error', 'Error al importar: ' + (err as Error).message);
     } finally {
       setImportProgress(null);
-      e.target.value = '';
+      setPreviewLoading(false);
+      setPreviewOpen(false);
     }
   };
 
@@ -343,7 +508,7 @@ export default function CuentasAjustadasPage() {
       if (editing) {
         // Build change summary for history
         const cambiosArr: string[] = [];
-        const fields: (keyof CuentaAjustada)[] = ['cuenta_contable', 'descripcion_ajuste', 'tipo_saldo', 'ajuste', 'fecha', 'vista', 'categoria_padre', 'es_cuenta_padre', 'activa', 'pais_id', 'centro_costo_id'];
+        const fields: (keyof CuentaAjustada)[] = ['cuenta_contable', 'descripcion_ajuste', 'tipo_saldo', 'ajuste', 'fecha', 'vista', 'categoria_padre', 'es_cuenta_padre', 'activa', 'pais_id', 'centro_costo_id', 'asiento_id'];
         for (const f of fields) {
           const oldVal = editing[f];
           const newVal = formData[f];
@@ -670,6 +835,34 @@ export default function CuentasAjustadasPage() {
         </div>
       </div>
 
+      {/* Loading Progress Bar */}
+      {loadingProgress && (
+        <div className="rounded-xl bg-background-50 border border-background-200 p-4 space-y-2">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <i className="ri-loader-4-line animate-spin w-5 h-5 flex items-center justify-center text-primary-500"></i>
+              <span className="text-sm font-medium text-foreground-900">{loadingProgress.etapa}</span>
+            </div>
+            <span className="text-xs text-foreground-600 tabular-nums">
+              {loadingProgress.total
+                ? `${loadingProgress.fetched.toLocaleString('es-CR')} de ${loadingProgress.total.toLocaleString('es-CR')} registros`
+                : `${loadingProgress.fetched.toLocaleString('es-CR')} registros cargados`}
+            </span>
+          </div>
+          <div className="w-full h-2 bg-background-200 rounded-full overflow-hidden">
+            <div
+              className="h-full bg-primary-500 rounded-full transition-all duration-300 ease-out"
+              style={{
+                width: loadingProgress.total
+                  ? `${Math.min(100, Math.round((loadingProgress.fetched / loadingProgress.total) * 100))}%`
+                  : '100%',
+                ...(loadingProgress.total ? {} : { animation: 'pulse 1.5s ease-in-out infinite' }),
+              }}
+            />
+          </div>
+        </div>
+      )}
+
       {/* Stats */}
       <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-10 gap-3">
         <div className="rounded-xl bg-background-50 p-4 border border-background-200">
@@ -902,14 +1095,21 @@ export default function CuentasAjustadasPage() {
               </thead>
               <tbody>
                 {loading ? (
-                  <tr>
-                    <td colSpan={19} className="py-8 text-center text-foreground-600">
-                      <div className="flex items-center justify-center gap-2">
-                        <i className="ri-loader-4-line animate-spin w-5 h-5 flex items-center justify-center"></i>
-                        Cargando...
-                      </div>
-                    </td>
-                  </tr>
+                  Array.from({ length: 10 }).map((_, i) => (
+                    <tr key={i} className="border-b border-background-100">
+                      <td className="py-2 pr-4"><div className="h-4 bg-background-200 rounded animate-pulse w-20"></div></td>
+                      <td className="py-2 pr-4"><div className="h-4 bg-background-200 rounded animate-pulse w-40"></div></td>
+                      <td className="py-2 pr-4"><div className="h-4 bg-background-200 rounded animate-pulse w-24"></div></td>
+                      <td className="py-2 pr-4"><div className="h-4 bg-background-200 rounded animate-pulse w-16"></div></td>
+                      <td className="py-2 pr-4"><div className="h-4 bg-background-200 rounded animate-pulse w-16"></div></td>
+                      {MESES_LABELS.map((_, idx) => (
+                        <td key={idx} className="py-2 pr-3"><div className="h-4 bg-background-200 rounded animate-pulse w-14 ml-auto"></div></td>
+                      ))}
+                      <td className="py-2 pr-3"><div className="h-4 bg-background-200 rounded animate-pulse w-16 ml-auto"></div></td>
+                      <td className="py-2 pr-4"><div className="h-4 bg-background-200 rounded animate-pulse w-24"></div></td>
+                      {isAdmin && <td className="py-2 pr-4"><div className="h-4 bg-background-200 rounded animate-pulse w-16"></div></td>}
+                    </tr>
+                  ))
                 ) : gerencialCategorias.length === 0 && gerencialCuentas.length === 0 ? (
                   <tr>
                     <td colSpan={19} className="py-8 text-center text-foreground-600">
@@ -1382,6 +1582,37 @@ export default function CuentasAjustadasPage() {
             </div>
           </div>
         </div>
+      )}
+
+      {/* Asientos Preview Modal */}
+      {previewOpen && (
+        <AsientosPreviewModal
+          isOpen={previewOpen}
+          onClose={() => setPreviewOpen(false)}
+          onConfirm={handleConfirmImport}
+          headers={previewHeaders}
+          data={previewData}
+          total={previewData.length}
+          validCount={previewData.filter((r) => r.valido).length}
+          skipped={previewData.filter((r) => r.error?.includes('Sin cuenta')).length}
+          duplicates={(() => {
+            const ids = new Set<string>();
+            let dup = 0;
+            previewData.forEach((r) => {
+              if (r.asiento_id) {
+                if (ids.has(r.asiento_id)) dup++;
+                else ids.add(r.asiento_id);
+              }
+            });
+            return dup;
+          })()}
+          missingCia={previewData.filter((r) => r.error?.includes('Sin compañía')).length}
+          loading={previewLoading}
+          organizaciones={organizaciones}
+          paises={paises}
+          companias={companias}
+          centrosCostos={centrosCostos}
+        />
       )}
     </div>
   );

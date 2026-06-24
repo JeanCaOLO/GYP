@@ -167,7 +167,7 @@ export interface UserScope {
   organizacion_id: string | null;
 }
 
-export type ModuleName = 'catalogo' | 'cobros-cofersa' | 'cuentas-ajustadas' | 'presupuestos' | 'activacion-cuentas' | 'factores' | 'historial-cambios' | 'configuracion';
+export type ModuleName = 'catalogo' | 'cobros-cofersa' | 'cuentas-ajustadas' | 'presupuestos' | 'activacion-cuentas' | 'factores' | 'historial-cambios' | 'asientos-extracontables' | 'configuracion';
 
 export type CategoriaCobro =
   | 'Gastos varios'

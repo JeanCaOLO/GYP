@@ -45,6 +45,7 @@ export default function CuentaAjustadaModal({
     categoria_padre: item?.categoria_padre || '',
     es_cuenta_padre: item?.es_cuenta_padre ?? false,
     activa: item?.activa ?? true,
+    asiento_id: item?.asiento_id || '',
     pais_id: item?.pais_id || '',
     compania_id: item?.compania_id || '',
     centro_costo_id: item?.centro_costo_id || '',
@@ -158,6 +159,10 @@ export default function CuentaAjustadaModal({
           <div>
             <label className="block text-sm font-medium text-slate-700 mb-1">Cuenta Contable *</label>
             <input type="text" value={form.cuenta_contable} onChange={(e) => setForm({ ...form, cuenta_contable: e.target.value })} className="w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-900 outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500" placeholder="Ej: 7.1.1.01.1.005" required />
+          </div>
+          <div>
+            <label className="block text-sm font-medium text-slate-700 mb-1">N° Asiento</label>
+            <input type="text" value={form.asiento_id} onChange={(e) => setForm({ ...form, asiento_id: e.target.value })} className="w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-900 outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500" placeholder="Ej: AS-001" />
           </div>
           <div>
             <label className="block text-sm font-medium text-slate-700 mb-1">Descripción para Ajuste *</label>

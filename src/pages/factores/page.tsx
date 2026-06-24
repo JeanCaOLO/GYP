@@ -6,6 +6,8 @@ import type { Factor, Organizacion, Pais, Compania, CentroCosto } from '@/types'
 import { useAuth } from '@/contexts/AuthContext';
 import { useToast } from '@/contexts/ToastContext';
 import { useUbicaciones } from '@/hooks/useUbicaciones';
+import FactorsPreviewModal from '@/pages/factores/components/FactorsPreviewModal';
+import type { FactorPreviewRow } from '@/pages/factores/components/FactorsPreviewModal';
 
 // Colores para las líneas del gráfico de comparación
 const CHART_COLORS = [
@@ -89,6 +91,14 @@ export default function FactoresPage() {
   const [renameTipoOpen, setRenameTipoOpen] = useState(false);
   const [renameTipoFrom, setRenameTipoFrom] = useState('');
   const [renameTipoTo, setRenameTipoTo] = useState('');
+
+  // Importación masiva
+  const [previewOpen, setPreviewOpen] = useState(false);
+  const [previewData, setPreviewData] = useState<FactorPreviewRow[]>([]);
+  const [previewHeaders, setPreviewHeaders] = useState<string[]>([]);
+  const [previewTotal, setPreviewTotal] = useState(0);
+  const [toInsert, setToInsert] = useState<Record<string, unknown>[]>([]);
+  const [importProgress, setImportProgress] = useState<string | null>(null);
 
   const { isAdmin } = useAuth();
   const { addToast } = useToast();
@@ -259,10 +269,8 @@ export default function FactoresPage() {
         addToast('error', 'No se encontraron tasas con ese tipo.');
         return;
       }
-      // Actualizar todas las tasas de ese tipo
       const { error: updateError } = await supabase.from('factores').update({ tipo: to }).eq('tipo', from);
       if (updateError) throw updateError;
-      // Registrar en el historial para cada una
       const historicoInserts = affected.map((f) => ({
         factor_id: f.id,
         valor_anterior: f.valor,
@@ -282,9 +290,286 @@ export default function FactoresPage() {
     }
   };
 
+  // --- DESCARGAR PLANTILLA ---
+  const handleDownloadTemplate = async () => {
+    try {
+      const xlsx = await import('xlsx');
+      const headers = ['Tipo', 'Valor', 'Fecha', 'Descripcion', 'Organizacion', 'Pais', 'Compania', 'Centro_Costo'];
+      const ejemplos = [
+        ['Tasa Acumulada', 548.25, '2026-03-15', 'Ejemplo de tasa acumulada', 'Mayoreo', 'Costa Rica', 'COFERSA', 'CC Central'],
+        ['Tasa Mensual', 542.1, '2026-03-01', 'Ejemplo de tasa mensual', 'Mayoreo', 'Colombia', 'BEVAL', 'CC Norte'],
+      ];
+
+      // Hoja de datos
+      const wsData = xlsx.utils.aoa_to_sheet([headers, ...ejemplos]);
+      wsData['!cols'] = headers.map(() => ({ wch: 22 }));
+
+      // Hoja de leyenda
+      const leyendaHeaders = ['Tipos de Tasa Existentes'];
+      const tiposExistentes = [...new Set(factores.map((f) => f.tipo))].sort();
+      const leyendaRows = tiposExistentes.map((t) => [t]);
+      if (tiposExistentes.length === 0) {
+        leyendaRows.push(['(No hay tipos existentes aún)']);
+      }
+      leyendaRows.push([]);
+      leyendaRows.push(['Instrucciones:']);
+      leyendaRows.push(['1. Llená la hoja "Tasas" con tus datos.']);
+      leyendaRows.push(['2. Si usás un Tipo que no está en esta leyenda, se creará automáticamente.']);
+      leyendaRows.push(['3. Si usás un Tipo existente, se validará contra la base de datos.']);
+      leyendaRows.push(['4. Las columnas Organizacion, Pais, Compania y Centro_Costo buscan coincidencia por nombre o código.']);
+      leyendaRows.push(['5. La columna Fecha debe estar en formato YYYY-MM-DD (ej: 2026-03-15).']);
+      const wsLeyenda = xlsx.utils.aoa_to_sheet([leyendaHeaders, ...leyendaRows]);
+      wsLeyenda['!cols'] = [{ wch: 50 }];
+
+      const wb = xlsx.utils.book_new();
+      xlsx.utils.book_append_sheet(wb, wsData, 'Tasas');
+      xlsx.utils.book_append_sheet(wb, wsLeyenda, 'Leyenda');
+      const wbout = xlsx.write(wb, { bookType: 'xlsx', type: 'array' });
+      const blob = new Blob([wbout], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = 'Plantilla_Tasas.xlsx';
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      addToast('error', 'Error al generar plantilla: ' + (err as Error).message);
+    }
+  };
+
+  // --- UTILIDADES ---
+  const normalizeText = (text: string): string =>
+    text.toLowerCase().trim().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/\s+/g, ' ');
+
+  const findEntity = <T extends { nombre: string; codigo: string; id: string }>(
+    search: string,
+    entities: T[],
+  ): T | null => {
+    if (!search || !search.trim()) return null;
+    const normSearch = normalizeText(search);
+    const exact = entities.find(
+      (e) => normalizeText(e.nombre) === normSearch || normalizeText(e.codigo) === normSearch,
+    );
+    if (exact) return exact;
+    const orig = entities.find(
+      (e) => e.nombre.toLowerCase().trim() === search.toLowerCase().trim() || e.codigo.toLowerCase().trim() === search.toLowerCase().trim(),
+    );
+    if (orig) return orig;
+    const contains = entities.find(
+      (e) => normalizeText(e.nombre).includes(normSearch) || normalizeText(e.codigo).includes(normSearch),
+    );
+    if (contains) return contains;
+    const reverseContains = entities.find(
+      (e) => normSearch.includes(normalizeText(e.nombre)) || normSearch.includes(normalizeText(e.codigo)),
+    );
+    if (reverseContains) return reverseContains;
+    return null;
+  };
+
+  // --- IMPORTAR EXCEL ---
+  const handleImportExcel = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setImportProgress('Leyendo archivo...');
+    try {
+      const xlsx = await import('xlsx');
+      const data = await file.arrayBuffer();
+      const workbook = xlsx.read(data, { type: 'array' });
+      const sheet = workbook.Sheets[workbook.SheetNames[0]];
+
+      const range = xlsx.utils.decode_range(sheet['!ref'] || 'A1');
+      const headerRow: string[] = [];
+      for (let C = range.s.c; C <= range.e.c; ++C) {
+        const cell = sheet[xlsx.utils.encode_cell({ r: range.s.r, c: C })];
+        headerRow.push(cell ? String(cell.v || '') : '');
+      }
+      const rawHeaders = headerRow.filter((h) => h.trim() !== '');
+      setPreviewHeaders(rawHeaders);
+
+      const json = xlsx.utils.sheet_to_json(sheet, { defval: '' }) as Record<string, unknown>[];
+      if (json.length === 0) {
+        addToast('warning', 'El archivo está vacío.');
+        setImportProgress(null);
+        return;
+      }
+
+      const normalizeHeader = (h: string) =>
+        h.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[\s\-_\/]+/g, '').trim();
+
+      const headerMap: Record<string, string> = {};
+      rawHeaders.forEach((h) => { headerMap[normalizeHeader(h)] = h; });
+
+      const getVal = (row: Record<string, unknown>, ...variants: string[]) => {
+        for (const v of variants) {
+          const norm = normalizeHeader(v);
+          const originalKey = headerMap[norm];
+          if (originalKey && originalKey in row && row[originalKey] !== '' && row[originalKey] !== null && row[originalKey] !== undefined) {
+            return row[originalKey];
+          }
+        }
+        return '';
+      };
+
+      // Verificar que al menos tengamos la columna Tipo
+      const tipoTest = getVal(json[0], 'Tipo', 'tipo', 'TIPO');
+      if (tipoTest === '') {
+        addToast('warning', `No se encontró la columna 'Tipo'. Headers: ${rawHeaders.join(', ')}`);
+        setImportProgress(null);
+        return;
+      }
+
+      const tiposExistentesSet = new Set(factores.map((f) => f.tipo));
+      const parsed: FactorPreviewRow[] = [];
+      const batchToInsert: Record<string, unknown>[] = [];
+
+      for (const row of json) {
+        const tipoVal = String(getVal(row, 'Tipo', 'tipo', 'TIPO') || '').trim();
+        if (!tipoVal) continue;
+
+        const valorVal = Number(getVal(row, 'Valor', 'valor', 'VALOR') || 0);
+        if (!valorVal || valorVal <= 0) continue;
+
+        const fechaRaw = String(getVal(row, 'Fecha', 'fecha', 'FECHA') || '').trim();
+        const fechaVal = fechaRaw ? fechaRaw.substring(0, 10) : new Date().toISOString().slice(0, 10);
+        const descripcionVal = String(getVal(row, 'Descripcion', 'descripcion', 'DESCRIPCION', 'Desc') || '').trim();
+
+        const orgNombre = String(getVal(row, 'Organizacion', 'organizacion', 'ORGANIZACION', 'Org', 'ORG') || '').trim();
+        const paisNombre = String(getVal(row, 'Pais', 'pais', 'PAIS', 'Country', 'COUNTRY') || '').trim();
+        const ciaNombre = String(getVal(row, 'Compania', 'compania', 'COMPANIA', 'Cia', 'CIA') || '').trim();
+        const ccNombre = String(getVal(row, 'Centro_Costo', 'CentroCosto', 'centro_costo', 'CENTRO_COSTO', 'CC') || '').trim();
+
+        const orgMatch = findEntity(orgNombre, organizaciones);
+        const paisMatch = findEntity(paisNombre, paises);
+        const ciaMatch = findEntity(ciaNombre, companias);
+        const ccMatch = findEntity(ccNombre, centrosCostos);
+
+        const simboloMoneda = paisMatch?.simbolo_moneda || '';
+
+        const tipoExiste = tiposExistentesSet.has(tipoVal);
+        const errores: string[] = [];
+        if (orgNombre && !orgMatch) errores.push(`Org "${orgNombre}" no encontrada`);
+        if (paisNombre && !paisMatch) errores.push(`País "${paisNombre}" no encontrado`);
+        if (ciaNombre && !ciaMatch) errores.push(`Cía "${ciaNombre}" no encontrada`);
+        if (ccNombre && !ccMatch) errores.push(`CC "${ccNombre}" no encontrado`);
+
+        const rowValido = errores.length === 0;
+
+        const rowData: Record<string, unknown> = {
+          tipo: tipoVal,
+          valor: valorVal,
+          fecha: fechaVal,
+          descripcion: descripcionVal || null,
+          activa: true,
+          ...(orgMatch ? { organizacion_id: orgMatch.id } : {}),
+          ...(paisMatch ? { pais_id: paisMatch.id } : {}),
+          ...(ciaMatch ? { compania_id: ciaMatch.id } : {}),
+          ...(ccMatch ? { centro_costo_id: ccMatch.id } : {}),
+        };
+        batchToInsert.push(rowData);
+
+        parsed.push({
+          tipo: tipoVal,
+          tipo_existente: tipoExiste,
+          valor: valorVal,
+          fecha: fechaVal,
+          descripcion: descripcionVal,
+          org_nombre: orgNombre,
+          org_id: orgMatch?.id || null,
+          pais_nombre: paisNombre,
+          pais_id: paisMatch?.id || null,
+          cia_nombre: ciaNombre,
+          cia_id: ciaMatch?.id || null,
+          cc_nombre: ccNombre,
+          cc_id: ccMatch?.id || null,
+          simbolo_moneda: simboloMoneda,
+          valido: rowValido,
+          error: rowValido ? null : errores.join('; '),
+        });
+      }
+
+      if (parsed.length === 0) {
+        addToast('warning', 'No se encontraron filas válidas con Tipo y Valor.');
+        setImportProgress(null);
+        return;
+      }
+
+      setPreviewData(parsed);
+      setPreviewTotal(json.length);
+      setToInsert(batchToInsert);
+      setImportProgress(null);
+      setPreviewOpen(true);
+    } catch (err) {
+      addToast('error', 'Error al importar: ' + (err as Error).message);
+      setImportProgress(null);
+    } finally {
+      e.target.value = '';
+    }
+  };
+
+  const handleConfirmImport = async () => {
+    const validRows = toInsert.filter((r) => previewData[toInsert.indexOf(r)]?.valido);
+    if (validRows.length === 0) {
+      addToast('warning', 'No hay registros válidos para importar.');
+      return;
+    }
+    setImportProgress('Importando tasas...');
+    try {
+      const BATCH_SIZE = 100;
+      let imported = 0;
+
+      for (let i = 0; i < validRows.length; i += BATCH_SIZE) {
+        const batch = validRows.slice(i, i + BATCH_SIZE);
+        imported += batch.length;
+        setImportProgress(`Importando ${imported} de ${validRows.length} tasas...`);
+
+        // Insertar en factores
+        const { data: inserted, error } = await supabase.from('factores').insert(batch).select('id, tipo, valor, fecha');
+        if (error) throw error;
+
+        // Registrar en historial para cada una
+        if (inserted && inserted.length > 0) {
+          const historicoInserts = inserted.map((ins: { id: string; tipo: string; valor: number; fecha: string }) => ({
+            factor_id: ins.id,
+            valor_anterior: null,
+            valor_nuevo: ins.valor,
+            fecha: ins.fecha,
+            tipo: ins.tipo,
+            descripcion: 'Importación masiva',
+          }));
+          await supabase.from('factores_historico').insert(historicoInserts);
+        }
+      }
+
+      addToast('success', `${validRows.length} tasas importadas correctamente.`);
+      setPreviewOpen(false);
+      setPreviewData([]);
+      setToInsert([]);
+      fetchData();
+    } catch (err) {
+      addToast('error', 'Error al importar: ' + (err as Error).message);
+    } finally {
+      setImportProgress(null);
+    }
+  };
+
   // Determinar cuántos tipos mostrar en las cards (scroll si hay muchos)
   const tiposVisibles = tiposExpandidos ? tipos : tipos.slice(0, 4);
   const necesitaExpandir = tipos.length > 4;
+
+  // Obtener símbolo de moneda según el país
+  const getSimboloMoneda = useCallback((paisId: string | null | undefined): string => {
+    if (!paisId) return '';
+    return paisesMap.get(paisId) || '';
+  }, [paisesMap]);
+
+  // Mapa rápido de pais_id -> símbolo
+  const paisSimboloMap = useMemo(() => {
+    const m = new Map<string, string>();
+    paises.forEach((p) => m.set(p.id, p.simbolo_moneda));
+    return m;
+  }, [paises]);
 
   return (
     <div className="space-y-6">
@@ -293,15 +578,31 @@ export default function FactoresPage() {
           <h1 className="text-2xl font-bold text-foreground-950">Tasas</h1>
           <p className="text-sm text-foreground-700">Gestión de tasas de cambio que afectan los montos del sistema</p>
         </div>
-        {isAdmin && (
-          <button
-            onClick={() => { setEditing(null); setModalOpen(true); }}
-            className="inline-flex items-center gap-2 rounded-lg bg-primary-500 px-4 py-2.5 text-sm font-medium text-background-50 hover:bg-primary-600 transition-colors whitespace-nowrap"
-          >
-            <i className="ri-add-line w-5 h-5 flex items-center justify-center"></i>
-            Nueva Tasa
-          </button>
-        )}
+        <div className="flex gap-2 flex-wrap">
+          {isAdmin && (
+            <>
+              <button
+                onClick={handleDownloadTemplate}
+                className="inline-flex items-center gap-2 rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-2.5 text-sm font-semibold text-emerald-700 hover:bg-emerald-100 active:scale-95 transition-all whitespace-nowrap cursor-pointer"
+              >
+                <i className="ri-download-line w-5 h-5 flex items-center justify-center"></i>
+                Descargar Plantilla
+              </button>
+              <label className="inline-flex items-center gap-2 rounded-lg bg-amber-500 px-4 py-2.5 text-sm font-semibold text-white hover:bg-amber-600 active:scale-95 cursor-pointer transition-all whitespace-nowrap">
+                <i className="ri-file-upload-line w-5 h-5 flex items-center justify-center"></i>
+                {importProgress || 'Importar Excel'}
+                <input type="file" accept=".xlsx,.xls" className="hidden" onChange={handleImportExcel} disabled={!!importProgress} />
+              </label>
+              <button
+                onClick={() => { setEditing(null); setModalOpen(true); }}
+                className="inline-flex items-center gap-2 rounded-lg bg-primary-500 px-4 py-2.5 text-sm font-medium text-background-50 hover:bg-primary-600 transition-colors whitespace-nowrap"
+              >
+                <i className="ri-add-line w-5 h-5 flex items-center justify-center"></i>
+                Nueva Tasa
+              </button>
+            </>
+          )}
+        </div>
       </div>
 
       {/* Cards de valores actuales */}
@@ -320,7 +621,7 @@ export default function FactoresPage() {
               </div>
               {factor ? (
                 <>
-                  <p className="text-2xl font-bold text-foreground-950">₡{formatNumero(factor.valor)}</p>
+                  <p className="text-2xl font-bold text-foreground-950">{paisSimboloMap.get(factor.pais_id || '') || ''}{formatNumero(factor.valor)}</p>
                   <p className="text-xs text-foreground-600 mt-1">Vigente desde: {formatFecha(factor.fecha)}</p>
                   {factor.descripcion && (
                     <p className="text-xs text-foreground-500 mt-0.5 italic truncate">{factor.descripcion}</p>
@@ -397,7 +698,7 @@ export default function FactoresPage() {
             </div>
             {resultadoConversion !== null && (
               <p className="text-xs text-foreground-600 mt-1">
-                Tasa usada: ₡{formatNumero(ultimoPorTipo.get(tasaSeleccionada)?.valor)} — {formatFecha(ultimoPorTipo.get(tasaSeleccionada)?.fecha || null)}
+                Tasa usada: {paisSimboloMap.get(ultimoPorTipo.get(tasaSeleccionada)?.pais_id || '') || ''}{formatNumero(ultimoPorTipo.get(tasaSeleccionada)?.valor)} — {formatFecha(ultimoPorTipo.get(tasaSeleccionada)?.fecha || null)}
               </p>
             )}
           </div>
@@ -517,7 +818,7 @@ export default function FactoresPage() {
                   tick={{ fontSize: 11, fill: 'oklch(var(--foreground-600))' }}
                   tickLine={false}
                   axisLine={false}
-                  tickFormatter={(v: number) => `₡${formatNumero(v)}`}
+                  tickFormatter={(v: number) => `${formatNumero(v)}`}
                   width={100}
                 />
                 <Tooltip
@@ -529,7 +830,7 @@ export default function FactoresPage() {
                     fontSize: '13px',
                   }}
                   labelFormatter={(label: string) => `Fecha: ${label}`}
-                  formatter={(value: number, name: string) => [value !== null ? `₡${formatNumero(value)}` : 'Sin dato', name]}
+                  formatter={(value: number, name: string) => [value !== null ? `${formatNumero(value)}` : 'Sin dato', name]}
                 />
                 <Legend />
                 {Array.from(tiposSeleccionados).map((tipo, idx) => (
@@ -556,10 +857,10 @@ export default function FactoresPage() {
             const pct = first !== 0 ? ((cambio / first) * 100) : 0;
             return (
               <div className="px-5 py-3 border-t border-background-200 flex items-center gap-4 text-xs text-foreground-600">
-                <span>Inicio: <strong className="text-foreground-950">₡{formatNumero(first)}</strong></span>
-                <span>Actual: <strong className="text-foreground-950">₡{formatNumero(last)}</strong></span>
+                <span>Inicio: <strong className="text-foreground-950">{formatNumero(first)}</strong></span>
+                <span>Actual: <strong className="text-foreground-950">{formatNumero(last)}</strong></span>
                 <span className={cambio >= 0 ? 'text-emerald-600' : 'text-rose-600'}>
-                  {cambio >= 0 ? '↑' : '↓'} ₡{formatNumero(Math.abs(cambio))} ({pct >= 0 ? '+' : ''}{pct.toFixed(2)}%)
+                  {cambio >= 0 ? '↑' : '↓'} {formatNumero(Math.abs(cambio))} ({pct >= 0 ? '+' : ''}{pct.toFixed(2)}%)
                 </span>
               </div>
             );
@@ -613,7 +914,7 @@ export default function FactoresPage() {
                         </span>
                       </td>
                       <td className="py-3 pr-4 font-mono font-medium text-foreground-950 whitespace-nowrap">
-                        ₡{formatNumero(item.valor)}
+                        {paisSimboloMap.get(item.pais_id || '') || ''}{formatNumero(item.valor)}
                       </td>
                       <td className="py-3 pr-4 text-foreground-700 whitespace-nowrap">
                         {formatFecha(item.fecha)}
@@ -768,7 +1069,7 @@ export default function FactoresPage() {
               <h3 className="text-lg font-semibold text-slate-900">Confirmar eliminación</h3>
             </div>
             <p className="text-sm text-slate-600 mb-6">
-              ¿Eliminar la tasa <strong className="text-slate-900">{confirmDelete.tipo}</strong> con valor ₡{formatNumero(confirmDelete.valor)} del {formatFecha(confirmDelete.fecha)}?
+              ¿Eliminar la tasa <strong className="text-slate-900">{confirmDelete.tipo}</strong> con valor {paisSimboloMap.get(confirmDelete.pais_id || '') || ''}{formatNumero(confirmDelete.valor)} del {formatFecha(confirmDelete.fecha)}?
             </p>
             <div className="flex justify-end gap-3">
               <button onClick={() => setConfirmDelete(null)} className="rounded-lg px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-100 border border-slate-200 transition-colors">Cancelar</button>
@@ -777,6 +1078,19 @@ export default function FactoresPage() {
           </div>
         </div>
       )}
+
+      {/* Modal de Previsualización de Importación */}
+      <FactorsPreviewModal
+        isOpen={previewOpen}
+        onClose={() => { setPreviewOpen(false); setPreviewData([]); setToInsert([]); }}
+        onConfirm={handleConfirmImport}
+        headers={previewHeaders}
+        data={previewData}
+        total={previewTotal}
+        tiposExistentes={tipos.map(([t]) => t)}
+        loading={!!importProgress}
+        importProgress={importProgress && importProgress.startsWith('Importando') ? importProgress : null}
+      />
     </div>
   );
 }

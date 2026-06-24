@@ -15,7 +15,7 @@ interface NavItem {
 const allNavItems: NavItem[] = [
   { path: '/catalogo', label: 'Catálogo GYP', icon: 'ri-table-line', module: 'catalogo' },
   { path: '/cobros-cofersa', label: 'Cobros Cofersa', icon: 'ri-money-dollar-circle-line', module: 'cobros-cofersa' },
-  { path: '/cuentas-ajustadas', label: 'Asientos Extracontables', icon: 'ri-file-text-line', module: 'cuentas-ajustadas' },
+  { path: '/asientos-extracontables', label: 'Asientos Extracontables', icon: 'ri-file-text-line', module: 'asientos-extracontables' },
   { path: '/presupuestos', label: 'Presupuestos', icon: 'ri-file-list-3-line', module: 'presupuestos' },
   { path: '/activacion-cuentas', label: 'Activación de Cuentas', icon: 'ri-toggle-line', module: 'activacion-cuentas' },
   { path: '/factores', label: 'Tasas', icon: 'ri-line-chart-line', module: 'factores' },
