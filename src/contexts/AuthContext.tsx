@@ -1,5 +1,5 @@
 import type { Usuario, RolUsuario, UserScope } from '@/types';
-import { createContext, useContext, useState, useCallback, useEffect, useRef } from 'react';
+import { createContext, useContext, useState, useCallback, useEffect, useRef, useMemo } from 'react';
 import { supabase } from '@/lib/supabase';
 
 interface AuthContextType {
@@ -137,11 +137,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const isEditor = rol === 'super_admin' || rol === 'admin' || rol === 'editor';
   const isViewer = true; // todos pueden ver
 
-  const userScope: UserScope = {
+  const userScope: UserScope = useMemo(() => ({
     pais_id: user?.pais_id || null,
     compania_id: user?.compania_id || null,
     organizacion_id: user?.organizacion_id || null,
-  };
+  }), [user?.pais_id, user?.compania_id, user?.organizacion_id]);
 
   const hasScope = userScope.pais_id !== null || userScope.compania_id !== null || userScope.organizacion_id !== null;
 

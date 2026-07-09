@@ -68,6 +68,133 @@ function formatFecha(fecha: string | null) {
   return d.toLocaleDateString('es-CR', { day: '2-digit', month: '2-digit', year: 'numeric' });
 }
 
+/**
+ * Convierte cualquier formato de fecha a YYYY-MM-DD.
+ * Soporta: DD/MM/YYYY, MM/DD/YYYY, YYYY-MM-DD, DD-MM-YYYY,
+ * DD.MM.YYYY, DD MMM YYYY, MMM DD YYYY, YYYYMMDD,
+ * números seriales de Excel, y cualquier string que new Date() entienda.
+ */
+function parseAnyDate(raw: unknown): string {
+  // Si ya es un número (Excel serial date)
+  if (typeof raw === 'number' && !isNaN(raw) && raw >= 1 && raw <= 100000) {
+    const excelEpoch = new Date(1899, 11, 30);
+    const result = new Date(excelEpoch.getTime() + Math.round(raw) * 86400000);
+    if (!isNaN(result.getTime())) {
+      return result.toISOString().slice(0, 10);
+    }
+  }
+
+  const s = String(raw ?? '').trim();
+  if (!s) return new Date().toISOString().slice(0, 10);
+
+  // Número entero en string (Excel serial date como texto)
+  if (/^\d{4,5}$/.test(s)) {
+    const serial = parseInt(s, 10);
+    if (serial >= 30000 && serial <= 80000) {
+      const excelEpoch = new Date(1899, 11, 30);
+      const result = new Date(excelEpoch.getTime() + serial * 86400000);
+      if (!isNaN(result.getTime())) {
+        return result.toISOString().slice(0, 10);
+      }
+    }
+  }
+
+  // YYYY-MM-DD, YYYY/MM/DD, YYYY.MM.DD
+  let m = s.match(/^(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})$/);
+  if (m) {
+    const y = parseInt(m[1], 10);
+    const mo = parseInt(m[2], 10);
+    const d = parseInt(m[3], 10);
+    if (mo >= 1 && mo <= 12 && d >= 1 && d <= 31) {
+      return `${m[1]}-${m[2].padStart(2, '0')}-${m[3].padStart(2, '0')}`;
+    }
+  }
+
+  // DD/MM/YYYY, DD-MM-YYYY, DD.MM.YYYY
+  // Heurística: si parte1 > 12 o ambas <= 12 → DD/MM/YYYY (convención LATAM)
+  m = s.match(/^(\d{1,2})[-/.](\d{1,2})[-/.](\d{4})$/);
+  if (m) {
+    const p1 = parseInt(m[1], 10);
+    const p2 = parseInt(m[2], 10);
+    const y = parseInt(m[3], 10);
+    if (p1 >= 1 && p2 >= 1 && y >= 1900 && y <= 2100) {
+      if (p1 > 12 && p2 <= 12) {
+        // Claramente DD/MM/YYYY (día > 12 no puede ser mes)
+        return `${m[3]}-${m[2].padStart(2, '0')}-${m[1].padStart(2, '0')}`;
+      }
+      if (p2 > 12 && p1 <= 12) {
+        // Claramente MM/DD/YYYY (segundo > 12 no puede ser mes en DD/MM)
+        return `${m[3]}-${m[1].padStart(2, '0')}-${m[2].padStart(2, '0')}`;
+      }
+      if (p1 <= 31 && p2 <= 12) {
+        // Ambiguo (ambos <= 12). Convención LATAM: DD/MM/YYYY
+        return `${m[3]}-${m[2].padStart(2, '0')}-${m[1].padStart(2, '0')}`;
+      }
+    }
+  }
+
+  // DD MMM YYYY  o  MMM DD, YYYY (inglés y español)
+  const monthsMap: Record<string, number> = {
+    ene: 1, jan: 1, enero: 1, january: 1,
+    feb: 2, febrero: 2, february: 2,
+    mar: 3, marzo: 3, march: 3,
+    abr: 4, apr: 4, abril: 4, april: 4,
+    may: 5, mayo: 5,
+    jun: 6, junio: 6, june: 6,
+    jul: 7, julio: 7, july: 7,
+    ago: 8, aug: 8, agosto: 8, august: 8,
+    sep: 9, set: 9, sept: 9, septiembre: 9, september: 9,
+    oct: 10, octubre: 10, october: 10,
+    nov: 11, noviembre: 11, november: 11,
+    dic: 12, dec: 12, diciembre: 12, december: 12,
+  };
+
+  // DD MMM YYYY (ej: "01 Ene 2026", "15 Jan 2025")
+  m = s.match(/^(\d{1,2})\s+([a-zA-Záéíóúñü]{3,})\s*,?\s*(\d{4})$/i);
+  if (m) {
+    const d = parseInt(m[1], 10);
+    const mo = monthsMap[m[2].toLowerCase().slice(0, 3)];
+    const y = parseInt(m[3], 10);
+    if (mo && d >= 1 && d <= 31) {
+      return `${m[3]}-${String(mo).padStart(2, '0')}-${m[1].padStart(2, '0')}`;
+    }
+  }
+
+  // MMM DD, YYYY (ej: "Ene 01 2026", "Jan 15, 2025")
+  m = s.match(/^([a-zA-Záéíóúñü]{3,})\s+(\d{1,2}),?\s*(\d{4})$/i);
+  if (m) {
+    const mo = monthsMap[m[1].toLowerCase().slice(0, 3)];
+    const d = parseInt(m[2], 10);
+    const y = parseInt(m[3], 10);
+    if (mo && d >= 1 && d <= 31) {
+      return `${m[3]}-${String(mo).padStart(2, '0')}-${m[2].padStart(2, '0')}`;
+    }
+  }
+
+  // YYYYMMDD (8 dígitos sin separadores)
+  m = s.match(/^(\d{4})(\d{2})(\d{2})$/);
+  if (m) {
+    const mo = parseInt(m[2], 10);
+    const d = parseInt(m[3], 10);
+    if (mo >= 1 && mo <= 12 && d >= 1 && d <= 31) {
+      return `${m[1]}-${m[2]}-${m[3]}`;
+    }
+  }
+
+  // Último recurso: dejar que new Date() intente parsear
+  // Agregar T00:00:00 para evitar offsets de zona horaria
+  const dt = new Date(s + (s.includes('T') ? '' : 'T00:00:00'));
+  if (!isNaN(dt.getTime())) {
+    const y = dt.getFullYear();
+    if (y >= 1900 && y <= 2100) {
+      return dt.toISOString().slice(0, 10);
+    }
+  }
+
+  // Fallback final: fecha de hoy
+  return new Date().toISOString().slice(0, 10);
+}
+
 const MIN_TIPOS_PARA_SCROLL = 5;
 
 export default function FactoresPage() {
@@ -317,7 +444,7 @@ export default function FactoresPage() {
       leyendaRows.push(['2. Si usás un Tipo que no está en esta leyenda, se creará automáticamente.']);
       leyendaRows.push(['3. Si usás un Tipo existente, se validará contra la base de datos.']);
       leyendaRows.push(['4. Las columnas Organizacion, Pais, Compania y Centro_Costo buscan coincidencia por nombre o código.']);
-      leyendaRows.push(['5. La columna Fecha debe estar en formato YYYY-MM-DD (ej: 2026-03-15).']);
+      leyendaRows.push(['5. La columna Fecha acepta cualquier formato: DD/MM/YYYY, YYYY-MM-DD, DD-MM-YYYY, DD MMM YYYY, etc.']);
       const wsLeyenda = xlsx.utils.aoa_to_sheet([leyendaHeaders, ...leyendaRows]);
       wsLeyenda['!cols'] = [{ wch: 50 }];
 
@@ -431,8 +558,8 @@ export default function FactoresPage() {
         const valorVal = Number(getVal(row, 'Valor', 'valor', 'VALOR') || 0);
         if (!valorVal || valorVal <= 0) continue;
 
-        const fechaRaw = String(getVal(row, 'Fecha', 'fecha', 'FECHA') || '').trim();
-        const fechaVal = fechaRaw ? fechaRaw.substring(0, 10) : new Date().toISOString().slice(0, 10);
+        const fechaRaw = getVal(row, 'Fecha', 'fecha', 'FECHA');
+        const fechaVal = parseAnyDate(fechaRaw || new Date());
         const descripcionVal = String(getVal(row, 'Descripcion', 'descripcion', 'DESCRIPCION', 'Desc') || '').trim();
 
         const orgNombre = String(getVal(row, 'Organizacion', 'organizacion', 'ORGANIZACION', 'Org', 'ORG') || '').trim();
@@ -462,10 +589,10 @@ export default function FactoresPage() {
           fecha: fechaVal,
           descripcion: descripcionVal || null,
           activa: true,
-          ...(orgMatch ? { organizacion_id: orgMatch.id } : {}),
-          ...(paisMatch ? { pais_id: paisMatch.id } : {}),
-          ...(ciaMatch ? { compania_id: ciaMatch.id } : {}),
-          ...(ccMatch ? { centro_costo_id: ccMatch.id } : {}),
+          organizacion_id: orgMatch?.id || null,
+          pais_id: paisMatch?.id || null,
+          compania_id: ciaMatch?.id || null,
+          centro_costo_id: ccMatch?.id || null,
         };
         batchToInsert.push(rowData);
 
@@ -509,44 +636,62 @@ export default function FactoresPage() {
   };
 
   const handleConfirmImport = async () => {
-    const validRows = toInsert.filter((r) => previewData[toInsert.indexOf(r)]?.valido);
+    const validRows = toInsert.filter((r, idx) => previewData[idx]?.valido);
     if (validRows.length === 0) {
       addToast('warning', 'No hay registros válidos para importar.');
       return;
     }
     setImportProgress('Importando tasas...');
+    let imported = 0;
+    let failed = 0;
+
     try {
-      const BATCH_SIZE = 100;
-      let imported = 0;
+      for (let i = 0; i < validRows.length; i++) {
+        const row = validRows[i];
+        setImportProgress(`Importando ${imported + 1} de ${validRows.length} tasas...`);
 
-      for (let i = 0; i < validRows.length; i += BATCH_SIZE) {
-        const batch = validRows.slice(i, i + BATCH_SIZE);
-        imported += batch.length;
-        setImportProgress(`Importando ${imported} de ${validRows.length} tasas...`);
+        const { data: inserted, error } = await supabase
+          .from('factores')
+          .insert(row)
+          .select('id, tipo, valor, fecha');
 
-        // Insertar en factores
-        const { data: inserted, error } = await supabase.from('factores').insert(batch).select('id, tipo, valor, fecha');
-        if (error) throw error;
+        if (error) {
+          // Si es error de RLS, mostramos el mensaje claro y paramos
+          if (error.message.includes('row-level security')) {
+            addToast('error', `Error RLS: La política de seguridad de Supabase está bloqueando los INSERT en la tabla "factores". Entrá al dashboard de Supabase → Table Editor → factores → Security y agregá una política de INSERT.`);
+            setImportProgress(null);
+            return;
+          }
+          failed++;
+          console.error(`Fila ${i + 1} falló:`, error.message, row);
+          continue;
+        }
 
-        // Registrar en historial para cada una
         if (inserted && inserted.length > 0) {
-          const historicoInserts = inserted.map((ins: { id: string; tipo: string; valor: number; fecha: string }) => ({
+          imported++;
+          const ins = inserted[0];
+          await supabase.from('factores_historico').insert({
             factor_id: ins.id,
             valor_anterior: null,
             valor_nuevo: ins.valor,
             fecha: ins.fecha,
             tipo: ins.tipo,
             descripcion: 'Importación masiva',
-          }));
-          await supabase.from('factores_historico').insert(historicoInserts);
+          }).then(({ error: histErr }) => {
+            if (histErr) console.error('Error historico:', histErr.message);
+          });
         }
       }
 
-      addToast('success', `${validRows.length} tasas importadas correctamente.`);
-      setPreviewOpen(false);
-      setPreviewData([]);
-      setToInsert([]);
-      fetchData();
+      if (imported > 0) {
+        addToast('success', `${imported} tasas importadas correctamente.${failed > 0 ? ` ${failed} fallaron.` : ''}`);
+        setPreviewOpen(false);
+        setPreviewData([]);
+        setToInsert([]);
+        fetchData();
+      } else {
+        addToast('error', `No se pudo importar ninguna tasa. ${failed} filas fallaron. Revisá la consola para más detalles.`);
+      }
     } catch (err) {
       addToast('error', 'Error al importar: ' + (err as Error).message);
     } finally {

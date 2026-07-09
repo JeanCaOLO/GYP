@@ -37,6 +37,7 @@ interface ImportPreviewModalProps {
   missingUbicacion: number;
   paisCount: number;
   orgCount: number;
+  ccCount: number;
   duplicates: number;
   loading: boolean;
   paises: Pais[];
@@ -56,6 +57,7 @@ export default function ImportPreviewModal({
   missingUbicacion,
   paisCount,
   orgCount,
+  ccCount,
   duplicates,
   loading,
   paises,
@@ -75,8 +77,9 @@ export default function ImportPreviewModal({
       { label: 'País no encontrado', value: missingUbicacion },
       { label: 'Con país asignado', value: paisCount },
       { label: 'Con org. asignada', value: orgCount },
+      { label: 'Con CC asignado', value: ccCount },
     ],
-    [total, validCount, skipped, invalidNumbers, duplicates, missingUbicacion, paisCount, orgCount],
+    [total, validCount, skipped, invalidNumbers, duplicates, missingUbicacion, paisCount, orgCount, ccCount],
   );
 
   if (!isOpen) return null;

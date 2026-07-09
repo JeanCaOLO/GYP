@@ -73,18 +73,34 @@ export default function AsientosExtracontablesPage() {
   const [importProgress, setImportProgress] = useState<string | null>(null);
   const [confirmDeleteCarga, setConfirmDeleteCarga] = useState<AsientoCarga | null>(null);
 
+  // GYP Gerencial
+  const [showGypModal, setShowGypModal] = useState(false);
+  const [gypYearFrom, setGypYearFrom] = useState(2025);
+  const [gypYearTo, setGypYearTo] = useState(2027);
+
   const { isAdmin } = useAuth();
   const { addToast } = useToast();
   const { organizaciones, paises, companias, centrosCostos, organizacionesMap, paisesMap, companiasMap, centrosCostosMap } = useUbicaciones();
-  const { isSuperAdmin, userScope, canEdit, canDelete } = usePermissions();
+  const { isSuperAdmin, userScope, canEdit, canDelete, scopeFilters } = usePermissions();
   const canWrite = canEdit;
+
+  // Mapa: compania_id → pais_id para derivar país desde compañía
+  const companiaToPaisMap = useMemo(() => {
+    const map = new Map<string, string>();
+    companias.forEach((c) => { if (c.pais_id) map.set(c.id, c.pais_id); });
+    return map;
+  }, [companias]);
 
   const fetchCargas = useCallback(async () => {
     setLoading(true);
     try {
       let query = supabase.from('asientos_extracontables_cargas').select('*').order('created_at', { ascending: false });
-      if (!isSuperAdmin && userScope.organizacion_id) {
-        query = query.eq('organizacion_id', userScope.organizacion_id);
+      // Aplicar filtros de scope — solo organizacion_id existe en cargas
+      if (!isSuperAdmin) {
+        const orgFilter = scopeFilters.find((f) => f.field === 'organizacion_id');
+        if (orgFilter) {
+          query = query.eq('organizacion_id', orgFilter.value);
+        }
       }
       const { data, error } = await query;
       if (error) throw error;
@@ -94,7 +110,7 @@ export default function AsientosExtracontablesPage() {
     } finally {
       setLoading(false);
     }
-  }, [addToast, isSuperAdmin, userScope]);
+  }, [addToast, isSuperAdmin, scopeFilters]);
 
   useEffect(() => { fetchCargas(); }, [fetchCargas]);
 
@@ -190,6 +206,268 @@ export default function AsientosExtracontablesPage() {
       URL.revokeObjectURL(url);
     } catch (err) {
       addToast('error', 'Error al generar plantilla: ' + (err as Error).message);
+    }
+  };
+
+  // --- DESCARGAR PLANTILLA GYP GERENCIAL ---
+  const handleOpenGypModal = () => {
+    setGypYearFrom(2025);
+    setGypYearTo(2027);
+    setShowGypModal(true);
+  };
+
+  const handleDownloadGypTemplate = async () => {
+    if (gypYearFrom > gypYearTo) {
+      addToast('warning', 'El año inicial no puede ser mayor al año final.');
+      return;
+    }
+    try {
+      const xlsx = await import('xlsx');
+      const MESES_ABREV = ['Ene', 'Feb', 'Mar', 'Abr', 'May', 'Jun', 'Jul', 'Ago', 'Sep', 'Oct', 'Nov', 'Dic'];
+
+      const monthCols: string[] = [];
+      for (let y = gypYearFrom; y <= gypYearTo; y++) {
+        MESES_ABREV.forEach((m) => monthCols.push(`${m} ${y}`));
+      }
+
+      const headers = ['Cuenta Contable', 'Descripción', 'Centro Costo', 'Compañía', 'Organización', 'País', ...monthCols];
+
+      const ejemplo: (string | number)[] = [
+        '7.1.1.01.1.001', 'Servicios profesionales', 'Cofersa Central', 'BEVAL', 'Mayoreo', 'Colombia',
+        ...Array(monthCols.length).fill(0),
+      ];
+      if (monthCols.length >= 3) {
+        ejemplo[6] = 1500000;
+        ejemplo[7] = 1500000;
+        ejemplo[8] = 1500000;
+      }
+
+      const ws = xlsx.utils.aoa_to_sheet([headers, ejemplo]);
+
+      const colWidths = headers.map((h, i) => {
+        if (i < 6) return { wch: Math.max(h.length + 4, 18) };
+        return { wch: 14 };
+      });
+      ws['!cols'] = colWidths;
+
+      const wb = xlsx.utils.book_new();
+      xlsx.utils.book_append_sheet(wb, ws, 'GYP Gerencial');
+      const wbout = xlsx.write(wb, { bookType: 'xlsx', type: 'array' });
+      const blob = new Blob([wbout], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `Plantilla_GYP_Gerencial_${gypYearFrom}_${gypYearTo}.xlsx`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+      setShowGypModal(false);
+      addToast('success', `Plantilla GYP ${gypYearFrom}-${gypYearTo} generada.`);
+    } catch (err) {
+      addToast('error', 'Error al generar plantilla GYP: ' + (err as Error).message);
+    }
+  };
+
+  // --- IMPORTAR GYP GERENCIAL ---
+  const handleImportGypExcel = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setImportProgress('Leyendo archivo GYP...');
+    try {
+      const xlsx = await import('xlsx');
+      const data = await file.arrayBuffer();
+      const workbook = xlsx.read(data, { type: 'array' });
+      const sheet = workbook.Sheets[workbook.SheetNames[0]];
+
+      const range = xlsx.utils.decode_range(sheet['!ref'] || 'A1');
+      const headerRow: string[] = [];
+      for (let C = range.s.c; C <= range.e.c; ++C) {
+        const cell = sheet[xlsx.utils.encode_cell({ r: range.s.r, c: C })];
+        headerRow.push(cell ? String(cell.v || '') : '');
+      }
+      const rawHeaders = headerRow.filter((h) => h.trim() !== '');
+
+      const MES_NUMBER: Record<string, number> = {
+        ene: 1, feb: 2, mar: 3, abr: 4, may: 5, jun: 6,
+        jul: 7, ago: 8, sep: 9, oct: 10, nov: 11, dic: 12,
+      };
+
+      const monthHeaders: { col: number; month: number; year: number; label: string }[] = [];
+      rawHeaders.forEach((h, idx) => {
+        const norm = h.toLowerCase().trim();
+        const monthMatch = norm.match(/^(ene|feb|mar|abr|may|jun|jul|ago|sep|oct|nov|dic)\s+(\d{4})$/);
+        if (monthMatch) {
+          monthHeaders.push({
+            col: idx,
+            month: MES_NUMBER[monthMatch[1]],
+            year: parseInt(monthMatch[2]),
+            label: h.trim(),
+          });
+        }
+      });
+
+      if (monthHeaders.length === 0) {
+        addToast('warning', 'No se detectaron columnas de meses (ej: "Ene 2025"). ¿Usaste la plantilla GYP?');
+        setImportProgress(null);
+        e.target.value = '';
+        return;
+      }
+
+      setPreviewHeaders(rawHeaders);
+
+      const json = xlsx.utils.sheet_to_json(sheet, { defval: '' }) as Record<string, unknown>[];
+      if (json.length === 0) {
+        addToast('warning', 'El archivo está vacío.');
+        setImportProgress(null);
+        e.target.value = '';
+        return;
+      }
+
+      const normalizeHeader = (h: string) =>
+        h.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[\s\-_\/]+/g, '').trim();
+
+      const headerMap: Record<string, string> = {};
+      rawHeaders.forEach((h) => { headerMap[normalizeHeader(h)] = h; });
+
+      const getVal = (row: Record<string, unknown>, ...variants: string[]) => {
+        for (const v of variants) {
+          const norm = normalizeHeader(v);
+          const originalKey = headerMap[norm];
+          if (originalKey && originalKey in row && row[originalKey] !== '' && row[originalKey] !== null && row[originalKey] !== undefined) {
+            return row[originalKey];
+          }
+        }
+        return '';
+      };
+
+      let skipped = 0;
+      let invalidos = 0;
+      let totDL = 0; let totCL = 0; let totDD = 0; let totCD = 0;
+      const parsed: AsientosPreviewRow[] = [];
+      const batchToInsert: Record<string, unknown>[] = [];
+
+      for (const row of json) {
+        const cuentaContable = String(getVal(row, 'Cuenta Contable', 'CuentaContable', 'cuenta_contable', 'Cuenta', 'cuenta') || '').trim();
+        if (!cuentaContable) { skipped++; continue; }
+
+        const descripcion = String(getVal(row, 'Descripción', 'Descripcion', 'descripcion', 'Concepto', 'concepto') || '').trim();
+        const centroCostoNom = String(getVal(row, 'Centro Costo', 'CentroCosto', 'centro_costo', 'CC') || '').trim();
+        const orgNombre = String(getVal(row, 'Organizacion', 'organizacion', 'ORGANIZACION', 'Org') || '').trim();
+        const paisNombre = String(getVal(row, 'Pais', 'pais', 'PAIS', 'Country') || '').trim();
+        const ciaNombre = String(getVal(row, 'Compania', 'compania', 'COMPANIA', 'Cia', 'Company') || '').trim();
+
+        const orgMatch = findEntity(orgNombre, organizaciones);
+        const paisMatch = findEntity(paisNombre, paises);
+        let ciaMatch = findEntity(ciaNombre, companias);
+        const ccMatch = findEntity(centroCostoNom, centrosCostos);
+
+        if (!ciaMatch && ciaNombre && centroCostoNom) {
+          for (const c of companias) {
+            if (normalizeText(centroCostoNom).includes(normalizeText(c.nombre)) || normalizeText(centroCostoNom).includes(normalizeText(c.codigo))) {
+              ciaMatch = c;
+              break;
+            }
+          }
+        }
+
+        const errores: string[] = [];
+        if (orgNombre && !orgMatch) errores.push(`Org "${orgNombre}" no encontrada`);
+        if (paisNombre && !paisMatch) errores.push(`País "${paisNombre}" no encontrado`);
+        if (ciaNombre && !ciaMatch) errores.push(`Cía "${ciaNombre}" no encontrada`);
+        if (centroCostoNom && !ccMatch) errores.push(`CC "${centroCostoNom}" no encontrado`);
+
+        let hasAnyMonthValue = false;
+        for (const mh of monthHeaders) {
+          const rawVal = row[rawHeaders[mh.col]];
+          if (rawVal === '' || rawVal === null || rawVal === undefined) continue;
+          const amount = Number(rawVal);
+          if (isNaN(amount) || amount === 0) continue;
+
+          hasAnyMonthValue = true;
+          const fecha = `${mh.year}-${String(mh.month).padStart(2, '0')}-01`;
+          const rowValido = errores.length === 0;
+
+          const debitoLocal = amount > 0 ? amount : 0;
+          const creditoLocal = amount < 0 ? Math.abs(amount) : 0;
+
+          totDL += debitoLocal;
+          totCL += creditoLocal;
+          if (!rowValido) invalidos++;
+
+          const rowData: Record<string, unknown> = {
+            cuenta_contable: cuentaContable,
+            asiento: `GYP ${mh.label}`,
+            consecutivo: null,
+            nit: null,
+            centro_costo: centroCostoNom || null,
+            fuente: 'GYP Gerencial',
+            referencia: descripcion || null,
+            debito_local: debitoLocal,
+            credito_local: creditoLocal,
+            debito_dolar: 0,
+            credito_dolar: 0,
+            fecha,
+            empresa: null,
+            paquete: null,
+            activa: true,
+            ...(orgMatch ? { organizacion_id: orgMatch.id } : {}),
+            ...(ciaMatch ? { compania_id: ciaMatch.id } : {}),
+            ...(ccMatch ? { centro_costo_id: ccMatch.id } : {}),
+          };
+          batchToInsert.push(rowData);
+
+          parsed.push({
+            asiento: `GYP ${mh.label}`,
+            consecutivo: '',
+            nit: '',
+            centro_costo: centroCostoNom,
+            cuenta_contable: cuentaContable,
+            fuente: 'GYP Gerencial',
+            referencia: descripcion,
+            debito_local: debitoLocal,
+            credito_local: creditoLocal,
+            debito_dolar: 0,
+            credito_dolar: 0,
+            fecha,
+            empresa: '',
+            paquete: '',
+            org_nombre: orgNombre,
+            org_id: orgMatch?.id || null,
+            pais_nombre: paisNombre,
+            pais_id: paisMatch?.id || null,
+            cia_nombre: ciaNombre,
+            cia_id: ciaMatch?.id || null,
+            cc_nombre: centroCostoNom,
+            cc_id: ccMatch?.id || null,
+            valido: rowValido,
+            error: rowValido ? null : errores.join('; '),
+          });
+        }
+
+        if (!hasAnyMonthValue) skipped++;
+      }
+
+      setPreviewData(parsed);
+      setPreviewStats({
+        total: json.length * monthHeaders.length,
+        skipped,
+        validos: parsed.filter((r) => r.valido).length,
+        invalidos,
+        totalDebitoLocal: totDL,
+        totalCreditoLocal: totCL,
+        totalDebitoDolar: totDD,
+        totalCreditoDolar: totCD,
+      });
+      setToInsert(batchToInsert);
+      setToInsertNombre(`GYP Gerencial - ${file.name.replace(/\.[^/.]+$/, '')}`);
+      setImportProgress(null);
+      setPreviewOpen(true);
+    } catch (err) {
+      addToast('error', 'Error al importar GYP: ' + (err as Error).message);
+      setImportProgress(null);
+    } finally {
+      e.target.value = '';
     }
   };
 
@@ -501,10 +779,22 @@ export default function AsientosExtracontablesPage() {
                 <i className="ri-download-line w-5 h-5 flex items-center justify-center"></i>
                 Descargar Plantilla
               </button>
+              <button
+                onClick={handleOpenGypModal}
+                className="inline-flex items-center gap-2 rounded-lg border border-sky-200 bg-sky-50 px-5 py-3 text-sm font-semibold text-sky-700 hover:bg-sky-100 active:scale-95 transition-all whitespace-nowrap cursor-pointer"
+              >
+                <i className="ri-download-cloud-2-line w-5 h-5 flex items-center justify-center"></i>
+                Plantilla GYP Gerencial
+              </button>
               <label className="inline-flex items-center gap-2 rounded-lg bg-amber-500 px-5 py-3 text-sm font-semibold text-white hover:bg-amber-600 active:scale-95 cursor-pointer transition-all whitespace-nowrap">
                 <i className="ri-file-upload-line w-5 h-5 flex items-center justify-center"></i>
                 {importProgress || 'Importar Excel'}
                 <input type="file" accept=".xlsx,.xls" className="hidden" onChange={handleImportExcel} disabled={!!importProgress} />
+              </label>
+              <label className="inline-flex items-center gap-2 rounded-lg bg-sky-500 px-5 py-3 text-sm font-semibold text-white hover:bg-sky-600 active:scale-95 cursor-pointer transition-all whitespace-nowrap">
+                <i className="ri-file-upload-line w-5 h-5 flex items-center justify-center"></i>
+                Importar GYP
+                <input type="file" accept=".xlsx,.xls" className="hidden" onChange={handleImportGypExcel} disabled={!!importProgress} />
               </label>
             </>
           )}
@@ -669,7 +959,7 @@ export default function AsientosExtracontablesPage() {
                                   {linea.organizacion_id ? organizacionesMap.get(linea.organizacion_id) || '—' : '—'}
                                 </td>
                                 <td className="py-2 px-3 text-slate-600 text-xs whitespace-nowrap">
-                                  {linea.compania_id ? paisesMap.get(linea.compania_id) || '—' : '—'}
+                                  {linea.compania_id ? paisesMap.get(companiaToPaisMap.get(linea.compania_id) || '') || '—' : '—'}
                                 </td>
                                 <td className="py-2 px-3 text-slate-600 text-xs whitespace-nowrap">
                                   {linea.compania_id ? companiasMap.get(linea.compania_id) || '—' : '—'}
@@ -722,6 +1012,63 @@ export default function AsientosExtracontablesPage() {
         companias={companias}
         centrosCostos={centrosCostos}
       />
+
+      {/* GYP Year Picker Modal */}
+      {showGypModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+          <div className="absolute inset-0 bg-black/50" onClick={() => setShowGypModal(false)} />
+          <div className="relative w-full max-w-sm rounded-xl bg-white shadow-2xl p-6">
+            <div className="flex items-center gap-3 mb-4">
+              <div className="w-10 h-10 rounded-full bg-sky-100 flex items-center justify-center shrink-0">
+                <i className="ri-calendar-line text-sky-600 w-5 h-5 flex items-center justify-center"></i>
+              </div>
+              <h3 className="text-lg font-semibold text-slate-900">Plantilla GYP Gerencial</h3>
+            </div>
+            <p className="text-sm text-slate-600 mb-4">
+              Seleccioná el rango de años. La plantilla incluirá los 12 meses de cada año como columnas individuales.
+            </p>
+            <div className="flex items-center gap-3 mb-5">
+              <div className="flex-1">
+                <label className="block text-xs font-medium text-slate-700 mb-1">Año Inicio</label>
+                <input
+                  type="number"
+                  value={gypYearFrom}
+                  onChange={(e) => setGypYearFrom(Number(e.target.value))}
+                  className="w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-900 outline-none focus:border-sky-500 focus:ring-1 focus:ring-sky-500"
+                  min={2020}
+                  max={2040}
+                />
+              </div>
+              <div className="flex-1">
+                <label className="block text-xs font-medium text-slate-700 mb-1">Año Fin</label>
+                <input
+                  type="number"
+                  value={gypYearTo}
+                  onChange={(e) => setGypYearTo(Number(e.target.value))}
+                  className="w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-900 outline-none focus:border-sky-500 focus:ring-1 focus:ring-sky-500"
+                  min={2020}
+                  max={2040}
+                />
+              </div>
+            </div>
+            <div className="flex justify-end gap-3">
+              <button
+                onClick={() => setShowGypModal(false)}
+                className="rounded-lg px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-100 border border-slate-200 transition-colors cursor-pointer"
+              >
+                Cancelar
+              </button>
+              <button
+                onClick={handleDownloadGypTemplate}
+                className="rounded-lg px-4 py-2 text-sm font-semibold bg-sky-600 text-white hover:bg-sky-700 transition-colors cursor-pointer inline-flex items-center gap-1.5"
+              >
+                <i className="ri-download-line w-4 h-4 flex items-center justify-center"></i>
+                Descargar
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Confirm Delete */}
       {confirmDeleteCarga && (

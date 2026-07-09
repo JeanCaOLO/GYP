@@ -57,7 +57,13 @@ export default function CuentasAjustadasPage() {
   const [previewData, setPreviewData] = useState<AsientoPreviewRow[]>([]);
   const [previewHeaders, setPreviewHeaders] = useState<string[]>([]);
   const [previewToInsert, setPreviewToInsert] = useState<Record<string, unknown>[]>([]);
-  const [previewLoading, setPreviewLoading] = useState(false);
+  const [showImportProgressModal, setShowImportProgressModal] = useState(false);
+  const [importProgressState, setImportProgressState] = useState<{ etapa: string; current: number; total: number }>({ etapa: '', current: 0, total: 0 });
+
+  // GYP Gerencial — Plantilla matricial
+  const [showGypModal, setShowGypModal] = useState(false);
+  const [gypYearFrom, setGypYearFrom] = useState(ANIO_DEFAULT);
+  const [gypYearTo, setGypYearTo] = useState(ANIO_DEFAULT + 1);
   const { isAdmin } = useAuth();
   const { addToast } = useToast();
   const { factoresMap } = useFactores();
@@ -234,7 +240,7 @@ export default function CuentasAjustadasPage() {
 
   const handleDownloadTemplate = () => {
     const headers = [
-      'ASIENTO', 'CUENTA_CONTABLE', 'DESCRIPCION', 'TIPO_SALDO', 'AJUSTE', 'FECHA',
+      'ASIENTO', 'CUENTA_CONTABLE', 'DESCRIPCION', 'TIPO_SALDO', 'AJUSTE', 'AJUSTE_DOLAR', 'FECHA',
       'VISTA', 'CATEGORIA', 'ORGANIZACION', 'PAIS', 'COMPANIA', 'CENTRO_COSTO',
     ];
 
@@ -325,6 +331,9 @@ export default function CuentasAjustadasPage() {
         const ajusteVal = Number(
           getVal(row, 'Ajuste', 'ajuste', 'AJUSTE', 'Monto', 'MONTO', 'Amount', 'AMOUNT') || 0
         );
+        const ajusteDolarVal = Number(
+          getVal(row, 'Ajuste Dolar', 'ajuste_dolar', 'AJUSTE_DOLAR', 'AjusteDolar') || 0
+        );
         const fechaRaw = getVal(row, 'Fecha', 'fecha', 'FECHA', 'Date', 'DATE');
         // Convierte serial de Excel (ej. 45658) a YYYY-MM-DD, o parsea string de fecha
         let fechaVal: string | null = null;
@@ -388,6 +397,7 @@ export default function CuentasAjustadasPage() {
           descripcion_ajuste: descripcion || '',
           tipo_saldo: tipoSaldo.includes('deudor') ? 'deudor' : 'acreedor',
           ajuste: ajusteVal || 0,
+          ajuste_dolar: ajusteDolarVal || 0,
           fecha: fechaVal,
           vista: vistaVal || '',
           categoria_padre: categoriaPadre || '',
@@ -409,6 +419,7 @@ export default function CuentasAjustadasPage() {
             descripcion_ajuste: descripcion,
             tipo_saldo: tipoSaldo.includes('deudor') ? 'deudor' : 'acreedor',
             ajuste: ajusteVal || 0,
+            ajuste_dolar: ajusteDolarVal || 0,
             fecha: fechaVal,
             vista: vistaVal || null,
             categoria_padre: categoriaPadre || null,
@@ -442,20 +453,327 @@ export default function CuentasAjustadasPage() {
     }
   };
 
+  // --- PLANTILLA GYP GERENCIAL (MATRICIAL) ---
+  const handleOpenGypModal = () => {
+    setGypYearFrom(ANIO_DEFAULT);
+    setGypYearTo(ANIO_DEFAULT);
+    setShowGypModal(true);
+  };
+
+  const handleDownloadGypTemplate = async () => {
+    if (gypYearFrom > gypYearTo) {
+      addToast('warning', 'El año inicial no puede ser mayor al año final.');
+      return;
+    }
+    try {
+      const xlsx = await import('xlsx');
+      const MESES_ABREV = ['Ene', 'Feb', 'Mar', 'Abr', 'May', 'Jun', 'Jul', 'Ago', 'Sep', 'Oct', 'Nov', 'Dic'];
+
+      const monthCols: string[] = [];
+      for (let y = gypYearFrom; y <= gypYearTo; y++) {
+        MESES_ABREV.forEach((m) => monthCols.push(`${m} ${y}`));
+      }
+
+      const headers = ['Cuenta Contable', 'Descripcion', 'Categoria', 'Centro Costo', 'Compania', 'Organizacion', 'Pais', ...monthCols];
+
+      const ejemplo: (string | number)[] = [
+        '7.1.1.01.1.001', 'Servicios profesionales', 'Personal', 'Cofersa Central', 'BEVAL', 'Mayoreo', 'Colombia',
+        ...Array(monthCols.length).fill(0),
+      ];
+      if (monthCols.length >= 3) {
+        ejemplo[7] = 1500000;
+        ejemplo[8] = 1500000;
+        ejemplo[9] = 1500000;
+      }
+
+      const ws = xlsx.utils.aoa_to_sheet([headers, ejemplo]);
+
+      const colWidths = headers.map((h, i) => {
+        if (i < 7) return { wch: Math.max(h.length + 4, 20) };
+        return { wch: 14 };
+      });
+      ws['!cols'] = colWidths;
+
+      const wb = xlsx.utils.book_new();
+      xlsx.utils.book_append_sheet(wb, ws, 'GYP Gerencial');
+      const wbout = xlsx.write(wb, { bookType: 'xlsx', type: 'array' });
+      const blob = new Blob([wbout], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `Plantilla_GYP_Gerencial_${gypYearFrom}_${gypYearTo}.xlsx`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+      setShowGypModal(false);
+      addToast('success', `Plantilla GYP ${gypYearFrom}-${gypYearTo} generada.`);
+    } catch (err) {
+      addToast('error', 'Error al generar plantilla GYP: ' + (err as Error).message);
+    }
+  };
+
+  // --- IMPORTAR GYP GERENCIAL ---
+  const handleImportGypExcel = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setImportProgress('Leyendo archivo GYP...');
+    try {
+      const xlsx = await import('xlsx');
+      const data = await file.arrayBuffer();
+      const workbook = xlsx.read(data, { type: 'array' });
+      const sheet = workbook.Sheets[workbook.SheetNames[0]];
+
+      const range = xlsx.utils.decode_range(sheet['!ref'] || 'A1');
+      const headerRow: string[] = [];
+      for (let C = range.s.c; C <= range.e.c; ++C) {
+        const cell = sheet[xlsx.utils.encode_cell({ r: range.s.r, c: C })];
+        headerRow.push(cell ? String(cell.v || '') : '');
+      }
+      const rawHeaders = headerRow.filter((h) => h.trim() !== '');
+
+      const MES_NUMBER: Record<string, number> = {
+        ene: 1, feb: 2, mar: 3, abr: 4, may: 5, jun: 6,
+        jul: 7, ago: 8, sep: 9, oct: 10, nov: 11, dic: 12,
+      };
+
+      const monthHeaders: { col: number; month: number; year: number; label: string }[] = [];
+      rawHeaders.forEach((h, idx) => {
+        const norm = h.toLowerCase().trim();
+        const monthMatch = norm.match(/^(ene|feb|mar|abr|may|jun|jul|ago|sep|oct|nov|dic)\s+(\d{4})$/);
+        if (monthMatch) {
+          monthHeaders.push({
+            col: idx,
+            month: MES_NUMBER[monthMatch[1]],
+            year: parseInt(monthMatch[2]),
+            label: h.trim(),
+          });
+        }
+      });
+
+      if (monthHeaders.length === 0) {
+        addToast('warning', 'No se detectaron columnas de meses (ej: "Ene 2025"). ¿Usaste la plantilla GYP?');
+        setImportProgress(null);
+        e.target.value = '';
+        return;
+      }
+
+      const json = xlsx.utils.sheet_to_json(sheet, { defval: '' }) as Record<string, unknown>[];
+      if (json.length === 0) {
+        addToast('warning', 'El archivo está vacío.');
+        setImportProgress(null);
+        e.target.value = '';
+        return;
+      }
+
+      const normalizeHeader = (h: string) =>
+        h.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[\s\-_\/]+/g, '').trim();
+
+      const headerMap: Record<string, string> = {};
+      rawHeaders.forEach((h) => { headerMap[normalizeHeader(h)] = h; });
+
+      const getVal = (row: Record<string, unknown>, ...variants: string[]) => {
+        for (const v of variants) {
+          const norm = normalizeHeader(v);
+          const originalKey = headerMap[norm];
+          if (originalKey && originalKey in row && row[originalKey] !== '' && row[originalKey] !== null && row[originalKey] !== undefined) {
+            return row[originalKey];
+          }
+        }
+        return '';
+      };
+
+      const normalizeStr = (s: string) => String(s).trim().toLowerCase();
+      const orgLookup = new Map<string, string>();
+      organizaciones.forEach((o) => {
+        orgLookup.set(normalizeStr(o.nombre), o.id);
+        if ((o as any).codigo) orgLookup.set(normalizeStr((o as any).codigo), o.id);
+      });
+      const paisLookup = new Map<string, string>();
+      paises.forEach((p) => {
+        paisLookup.set(normalizeStr(p.nombre), p.id);
+        if (p.codigo) paisLookup.set(normalizeStr(p.codigo), p.id);
+      });
+      const ciaLookup = new Map<string, string>();
+      companias.forEach((c) => {
+        ciaLookup.set(normalizeStr(c.nombre), c.id);
+        if ((c as any).codigo) ciaLookup.set(normalizeStr((c as any).codigo), c.id);
+      });
+      const ccLookup = new Map<string, string>();
+      centrosCostos.forEach((c) => {
+        ccLookup.set(normalizeStr(c.nombre), c.id);
+        if ((c as any).codigo) ccLookup.set(normalizeStr((c as any).codigo), c.id);
+      });
+
+      // Para encontrar cuenta existente: buscamos por cuenta_contable + compania_id + pais_id
+      const cuentaKey = (cuenta: string, ciaId: string | null, paisId: string | null) =>
+        `${cuenta}|${ciaId || 'null'}|${paisId || 'null'}`;
+      const cuentaIdMap = new Map<string, string>();
+      cuentas.forEach((c) => {
+        cuentaIdMap.set(cuentaKey(c.cuenta_contable, c.compania_id, c.pais_id), c.id);
+      });
+
+      let cuentasCreadas = 0;
+      let cuentasActualizadas = 0;
+      let montosImportados = 0;
+      let filasVacias = 0;
+      let filasError = 0;
+      const cuentasAfectadasIds = new Set<string>();
+      const montosToUpsert: { cuenta_ajustada_id: string; anio: number; mes: number; monto: number }[] = [];
+
+      for (const row of json) {
+        const cuentaContable = String(getVal(row, 'Cuenta Contable', 'CuentaContable', 'cuenta_contable', 'Cuenta', 'cuenta') || '').trim();
+        if (!cuentaContable) { filasVacias++; continue; }
+
+        const descripcion = String(getVal(row, 'Descripcion', 'descripcion', 'Descripción', 'descripción', 'Concepto', 'concepto') || '').trim();
+        const categoriaPadre = String(getVal(row, 'Categoria', 'categoria', 'CATEGORIA', 'Categoria Padre', 'categoria_padre', 'CATEGORIA_PADRE') || '').trim();
+        const centroCostoNom = String(getVal(row, 'Centro Costo', 'CentroCosto', 'centro_costo', 'CENTRO_COSTO', 'CC') || '').trim();
+        const orgNombre = String(getVal(row, 'Organizacion', 'organizacion', 'ORGANIZACION', 'Org') || '').trim();
+        const paisNombre = String(getVal(row, 'Pais', 'pais', 'PAIS', 'País', 'PAÍS') || '').trim();
+        const ciaNombre = String(getVal(row, 'Compania', 'compania', 'COMPANIA', 'Cia', 'Compañía', 'COMPAÑÍA') || '').trim();
+
+        const organizacion_id = orgNombre ? orgLookup.get(normalizeStr(orgNombre)) || null : null;
+        const pais_id = paisNombre ? paisLookup.get(normalizeStr(paisNombre)) || null : null;
+        const compania_id = ciaNombre ? ciaLookup.get(normalizeStr(ciaNombre)) || null : null;
+        const centro_costo_id = centroCostoNom ? ccLookup.get(normalizeStr(centroCostoNom)) || null : null;
+
+        const errores: string[] = [];
+        if (!compania_id && ciaNombre) errores.push(`Cía "${ciaNombre}" no encontrada`);
+        if (!pais_id && paisNombre) errores.push(`País "${paisNombre}" no encontrado`);
+
+        if (errores.length > 0) {
+          filasError++;
+          continue;
+        }
+
+        // Buscar cuenta existente por cuenta + compañía + país
+        let cuentaId = cuentaIdMap.get(cuentaKey(cuentaContable, compania_id, pais_id));
+
+        if (!cuentaId) {
+          // Crear nueva cuenta
+          const { data, error } = await supabase.from('cuentas_ajustadas').insert({
+            cuenta_contable: cuentaContable,
+            descripcion_ajuste: descripcion || cuentaContable,
+            tipo_saldo: 'deudor',
+            ajuste: 0,
+            ajuste_dolar: 0,
+            fecha: null,
+            vista: 'GYP Gerencial',
+            categoria_padre: categoriaPadre || null,
+            asiento_id: null,
+            es_cuenta_padre: false,
+            activa: true,
+            organizacion_id,
+            pais_id,
+            compania_id,
+            centro_costo_id,
+          }).select('id').single();
+
+          if (error || !data) {
+            filasError++;
+            continue;
+          }
+          cuentaId = data.id;
+          cuentaIdMap.set(cuentaKey(cuentaContable, compania_id), cuentaId);
+          cuentasCreadas++;
+        } else {
+          cuentasActualizadas++;
+        }
+
+        cuentasAfectadasIds.add(cuentaId);
+
+        // Procesar montos mensuales
+        for (const mh of monthHeaders) {
+          const rawVal = row[rawHeaders[mh.col]];
+          if (rawVal === '' || rawVal === null || rawVal === undefined) continue;
+          const amount = Number(rawVal);
+          if (isNaN(amount) || amount === 0) continue;
+
+          montosToUpsert.push({
+            cuenta_ajustada_id: cuentaId,
+            anio: mh.year,
+            mes: mh.month,
+            monto: amount,
+            pais_id: pais_id || null,
+            centro_costo_id: centro_costo_id || null,
+            organizacion_id: organizacion_id || null,
+            compania_id: compania_id || null,
+          });
+          montosImportados++;
+        }
+      }
+
+      // Upsert montos mensuales en batches
+      const BATCH_SIZE = 500;
+      for (let i = 0; i < montosToUpsert.length; i += BATCH_SIZE) {
+        const batch = montosToUpsert.slice(i, i + BATCH_SIZE);
+        setImportProgress(`Importando montos ${Math.min(i + batch.length, montosToUpsert.length)} de ${montosToUpsert.length}...`);
+        const { error } = await supabase.from('cuentas_ajustadas_montos_mensuales').upsert(batch, {
+          onConflict: 'cuenta_ajustada_id,anio,mes',
+        });
+        if (error) throw error;
+      }
+
+      // Recalcular ajuste de cada cuenta afectada para ANIO_DEFAULT
+      setImportProgress('Recalculando totales...');
+      const cuentasUpdates: { id: string; ajuste: number }[] = [];
+      for (const cuentaId of cuentasAfectadasIds) {
+        let total = 0;
+        montosToUpsert.forEach((m) => {
+          if (m.cuenta_ajustada_id === cuentaId && m.anio === ANIO_DEFAULT) {
+            total += m.monto;
+          }
+        });
+        cuentasUpdates.push({ id: cuentaId, ajuste: total });
+      }
+
+      for (let i = 0; i < cuentasUpdates.length; i += BATCH_SIZE) {
+        const batch = cuentasUpdates.slice(i, i + BATCH_SIZE);
+        for (const upd of batch) {
+          const { error } = await supabase.from('cuentas_ajustadas').update({ ajuste: upd.ajuste }).eq('id', upd.id);
+          if (error) throw error;
+        }
+      }
+
+      const msgs: string[] = [];
+      if (cuentasCreadas > 0) msgs.push(`${cuentasCreadas} cuenta(s) creada(s)`);
+      if (cuentasActualizadas > 0) msgs.push(`${cuentasActualizadas} cuenta(s) con montos actualizados`);
+      if (montosImportados > 0) msgs.push(`${montosImportados} monto(s) importado(s)`);
+      if (filasError > 0) msgs.push(`${filasError} fila(s) con error`);
+      addToast('success', msgs.join(' · ') || 'Importación completada');
+      fetchData();
+    } catch (err) {
+      addToast('error', 'Error al importar GYP: ' + (err as Error).message);
+    } finally {
+      setImportProgress(null);
+      e.target.value = '';
+    }
+  };
+
   const handleConfirmImport = async () => {
-    setPreviewLoading(true);
+    setPreviewOpen(false);
+    setShowImportProgressModal(true);
+    setImportProgressState({ etapa: 'Iniciando importación...', current: 0, total: previewToInsert.length });
+
     try {
       const BATCH_SIZE = 500;
       let imported = 0;
       let failed = 0;
       let duplicados = 0;
+      const total = previewToInsert.length;
 
       const conAsiento = previewToInsert.filter((r) => r.asiento_id);
       const sinAsiento = previewToInsert.filter((r) => !r.asiento_id);
 
+      // Batch inserts for rows with asiento_id (upsert)
       for (let i = 0; i < conAsiento.length; i += BATCH_SIZE) {
         const batch = conAsiento.slice(i, i + BATCH_SIZE);
-        setImportProgress(`Importando ${Math.min(i + batch.length, conAsiento.length)} de ${conAsiento.length} registros...`);
+        const batchEnd = Math.min(i + BATCH_SIZE, conAsiento.length);
+        setImportProgressState({
+          etapa: 'Importando registros con asiento...',
+          current: batchEnd,
+          total,
+        });
         const { error } = await supabase.from('cuentas_ajustadas').upsert(batch, { onConflict: 'asiento_id' });
         if (error) {
           if (error.message.includes('duplicate') || error.code === '23505') {
@@ -463,21 +781,22 @@ export default function CuentasAjustadasPage() {
           } else {
             failed += batch.length;
           }
-          console.error('Error en batch con asiento:', error);
         } else {
           imported += batch.length;
         }
       }
 
+      // Batch inserts for rows without asiento_id (plain insert)
       for (let i = 0; i < sinAsiento.length; i += BATCH_SIZE) {
         const rawBatch = sinAsiento.slice(i, i + BATCH_SIZE);
         const batch = rawBatch.map(({ asiento_id: _aid, ...rest }) => rest);
-        setImportProgress(`Importando sin-asiento ${Math.min(i + batch.length, sinAsiento.length)} de ${sinAsiento.length} registros...`);
+        setImportProgressState({
+          etapa: 'Importando registros sin asiento...',
+          current: conAsiento.length + Math.min(i + BATCH_SIZE, sinAsiento.length),
+          total,
+        });
         const { error } = await supabase.from('cuentas_ajustadas').insert(batch);
         if (error) {
-          console.error('Error en batch sin asiento:', error);
-          console.error('Muestra del primer registro del batch:', JSON.stringify(batch[0]));
-          console.error('Total en batch:', batch.length);
           if (error.message.includes('duplicate') || error.code === '23505') {
             duplicados += batch.length;
           } else {
@@ -487,6 +806,8 @@ export default function CuentasAjustadasPage() {
           imported += batch.length;
         }
       }
+
+      setImportProgressState({ etapa: '¡Completado!', current: total, total });
 
       const msgs: string[] = [];
       if (imported > 0) msgs.push(`${imported} importadas`);
@@ -497,9 +818,11 @@ export default function CuentasAjustadasPage() {
     } catch (err) {
       addToast('error', 'Error al importar: ' + (err as Error).message);
     } finally {
-      setImportProgress(null);
-      setPreviewLoading(false);
-      setPreviewOpen(false);
+      setTimeout(() => {
+        setShowImportProgressModal(false);
+        setImportProgressState({ etapa: '', current: 0, total: 0 });
+        setPreviewToInsert([]);
+      }, 800);
     }
   };
 
@@ -508,7 +831,7 @@ export default function CuentasAjustadasPage() {
       if (editing) {
         // Build change summary for history
         const cambiosArr: string[] = [];
-        const fields: (keyof CuentaAjustada)[] = ['cuenta_contable', 'descripcion_ajuste', 'tipo_saldo', 'ajuste', 'fecha', 'vista', 'categoria_padre', 'es_cuenta_padre', 'activa', 'pais_id', 'centro_costo_id', 'asiento_id'];
+        const fields: (keyof CuentaAjustada)[] = ['cuenta_contable', 'descripcion_ajuste', 'tipo_saldo', 'ajuste', 'ajuste_dolar', 'fecha', 'vista', 'categoria_padre', 'es_cuenta_padre', 'activa', 'pais_id', 'centro_costo_id', 'asiento_id'];
         for (const f of fields) {
           const oldVal = editing[f];
           const newVal = formData[f];
@@ -1008,10 +1331,22 @@ export default function CuentasAjustadasPage() {
                   <i className="ri-download-line w-5 h-5 flex items-center justify-center"></i>
                   Descargar Plantilla
                 </button>
+                <button
+                  onClick={handleOpenGypModal}
+                  className="inline-flex items-center gap-2 rounded-lg border border-sky-300 bg-sky-50 px-5 py-3 text-sm font-semibold text-sky-700 hover:bg-sky-100 active:scale-95 transition-all whitespace-nowrap cursor-pointer"
+                >
+                  <i className="ri-download-cloud-2-line w-5 h-5 flex items-center justify-center"></i>
+                  Plantilla GYP
+                </button>
                 <label className="inline-flex items-center gap-2 rounded-lg bg-amber-500 px-5 py-3 text-sm font-semibold text-white hover:bg-amber-600 active:scale-95 cursor-pointer transition-all whitespace-nowrap">
                   <i className="ri-file-upload-line w-5 h-5 flex items-center justify-center"></i>
                   {importProgress || 'Importar Excel'}
                   <input type="file" accept=".xlsx,.xls" className="hidden" onChange={handleImportExcel} disabled={!!importProgress} />
+                </label>
+                <label className="inline-flex items-center gap-2 rounded-lg bg-sky-500 px-5 py-3 text-sm font-semibold text-white hover:bg-sky-600 active:scale-95 cursor-pointer transition-all whitespace-nowrap">
+                  <i className="ri-file-upload-line w-5 h-5 flex items-center justify-center"></i>
+                  Importar GYP
+                  <input type="file" accept=".xlsx,.xls" className="hidden" onChange={handleImportGypExcel} disabled={!!importProgress} />
                 </label>
                 <button
                   onClick={() => { setEditing(null); setModalOpen(true); }}
@@ -1083,12 +1418,15 @@ export default function CuentasAjustadasPage() {
                   <th className="py-3 pr-4 font-medium whitespace-nowrap sticky left-0 bg-background-50 z-10">Cuenta</th>
                   <th className="py-3 pr-4 font-medium whitespace-nowrap sticky left-0 bg-background-50 z-10">Descripción</th>
                   <th className="py-3 pr-4 font-medium whitespace-nowrap">Categoría</th>
+                  <th className="py-3 pr-4 font-medium whitespace-nowrap text-xs">Org.</th>
                   <th className="py-3 pr-4 font-medium whitespace-nowrap text-xs">País</th>
-                  <th className="py-3 pr-4 font-medium whitespace-nowrap text-xs">Centro de Costo</th>
+                  <th className="py-3 pr-4 font-medium whitespace-nowrap text-xs">Cía.</th>
+                  <th className="py-3 pr-4 font-medium whitespace-nowrap text-xs">CC</th>
                   {MESES_LABELS.map((mes) => (
                     <th key={mes} className="py-3 pr-3 font-medium whitespace-nowrap text-right">{mes}-{String(ANIO_DEFAULT).slice(-2)}</th>
                   ))}
                   <th className="py-3 pr-3 font-medium whitespace-nowrap text-right">Total</th>
+                  <th className="py-3 pr-3 font-medium whitespace-nowrap text-right">Aj. Dólar</th>
                   <th className="py-3 pr-4 font-medium whitespace-nowrap text-center">Montos</th>
                   {isAdmin && <th className="py-3 pr-4 font-medium whitespace-nowrap">Acciones</th>}
                 </tr>
@@ -1102,9 +1440,12 @@ export default function CuentasAjustadasPage() {
                       <td className="py-2 pr-4"><div className="h-4 bg-background-200 rounded animate-pulse w-24"></div></td>
                       <td className="py-2 pr-4"><div className="h-4 bg-background-200 rounded animate-pulse w-16"></div></td>
                       <td className="py-2 pr-4"><div className="h-4 bg-background-200 rounded animate-pulse w-16"></div></td>
+                      <td className="py-2 pr-4"><div className="h-4 bg-background-200 rounded animate-pulse w-16"></div></td>
+                      <td className="py-2 pr-4"><div className="h-4 bg-background-200 rounded animate-pulse w-16"></div></td>
                       {MESES_LABELS.map((_, idx) => (
                         <td key={idx} className="py-2 pr-3"><div className="h-4 bg-background-200 rounded animate-pulse w-14 ml-auto"></div></td>
                       ))}
+                      <td className="py-2 pr-3"><div className="h-4 bg-background-200 rounded animate-pulse w-16 ml-auto"></div></td>
                       <td className="py-2 pr-3"><div className="h-4 bg-background-200 rounded animate-pulse w-16 ml-auto"></div></td>
                       <td className="py-2 pr-4"><div className="h-4 bg-background-200 rounded animate-pulse w-24"></div></td>
                       {isAdmin && <td className="py-2 pr-4"><div className="h-4 bg-background-200 rounded animate-pulse w-16"></div></td>}
@@ -1112,7 +1453,7 @@ export default function CuentasAjustadasPage() {
                   ))
                 ) : gerencialCategorias.length === 0 && gerencialCuentas.length === 0 ? (
                   <tr>
-                    <td colSpan={19} className="py-8 text-center text-foreground-600">
+                    <td colSpan={22} className="py-8 text-center text-foreground-600">
                       No se encontraron cuentas GYP Gerencial
                     </td>
                   </tr>
@@ -1155,6 +1496,9 @@ export default function CuentasAjustadasPage() {
                             })}
                             <td className="py-2 pr-3 whitespace-nowrap text-right font-bold text-foreground-950">
                               {formatNumero(getTotalCuenta(item.id))}
+                            </td>
+                            <td className="py-2 pr-3 whitespace-nowrap text-right font-medium text-foreground-950">
+                              {formatNumero2(item.ajuste_dolar ?? 0)}
                             </td>
                             <td className="py-2 pr-4 whitespace-nowrap text-center">
                               <button
@@ -1218,6 +1562,9 @@ export default function CuentasAjustadasPage() {
                             <td className="py-2 pr-3 whitespace-nowrap text-right font-bold text-foreground-950">
                               {formatNumero(getTotalCuenta(cuentaPadre.id))}
                             </td>
+                            <td className="py-2 pr-3 whitespace-nowrap text-right font-bold text-foreground-950">
+                              {formatNumero2(cuentaPadre.ajuste_dolar ?? 0)}
+                            </td>
                             <td className="py-2 pr-4 whitespace-nowrap text-center">
                               <button
                                 onClick={() => { setEditingMesesItem(cuentaPadre); setEditMesesOpen(true); }}
@@ -1270,6 +1617,7 @@ export default function CuentasAjustadasPage() {
                             <td className="py-2 pr-3 whitespace-nowrap text-right font-bold text-foreground-950">
                               {formatNumero(getTotalCategoria(categoria))}
                             </td>
+                            <td className="py-2 pr-3"></td>
                             <td className="py-2 pr-4"></td>
                             {canWrite && <td className="py-2 pr-4"></td>}
                           </tr>
@@ -1307,6 +1655,9 @@ export default function CuentasAjustadasPage() {
                     })}
                     <td className="py-2 pr-3 whitespace-nowrap text-right font-bold text-foreground-950">
                       {formatNumero(getTotalCuenta(item.id))}
+                    </td>
+                    <td className="py-2 pr-3 whitespace-nowrap text-right font-medium text-foreground-950">
+                      {formatNumero2(item.ajuste_dolar ?? 0)}
                     </td>
                     <td className="py-2 pr-4 whitespace-nowrap text-center">
                       <button
@@ -1359,6 +1710,7 @@ export default function CuentasAjustadasPage() {
                     <th className="py-3 pr-4 font-medium whitespace-nowrap">Repetida</th>
                     <th className="py-3 pr-4 font-medium whitespace-nowrap">Tipo Saldo</th>
                     <th className="py-3 pr-4 font-medium whitespace-nowrap">Ajuste</th>
+                    <th className="py-3 pr-4 font-medium whitespace-nowrap">Ajuste Dólar</th>
                     <th className="py-3 pr-4 font-medium whitespace-nowrap">Fecha</th>
                     <th className="py-3 pr-4 font-medium whitespace-nowrap">Vista</th>
                     <th className="py-3 pr-4 font-medium whitespace-nowrap">Org.</th>
@@ -1373,14 +1725,14 @@ export default function CuentasAjustadasPage() {
                   {loading ? (
                     Array.from({ length: 8 }).map((_, i) => (
                       <tr key={i} className="border-b border-background-100">
-                        {Array.from({ length: canWrite ? 14 : 13 }).map((_, j) => (
+                        {Array.from({ length: canWrite ? 15 : 14 }).map((_, j) => (
                           <td key={j} className="py-3 pr-4"><div className="h-4 bg-background-200 rounded animate-pulse w-24"></div></td>
                         ))}
                       </tr>
                     ))
                   ) : paginated.length === 0 ? (
                     <tr>
-                      <td colSpan={canWrite ? 16 : 15} className="py-8 text-center text-foreground-600">
+                      <td colSpan={canWrite ? 17 : 16} className="py-8 text-center text-foreground-600">
                         No se encontraron cuentas ajustadas
                       </td>
                     </tr>
@@ -1436,6 +1788,9 @@ export default function CuentasAjustadasPage() {
                             {item.vista === 'GYP Gerencial'
                               ? formatNumero2(getTotalCuenta(item.id))
                               : formatNumero2(item.ajuste)}
+                          </td>
+                          <td className="py-3 pr-4 whitespace-nowrap font-medium text-foreground-950">
+                            {formatNumero2(item.ajuste_dolar ?? 0)}
                           </td>
                           <td className="py-3 pr-4 whitespace-nowrap text-foreground-700">
                             {formatFecha(item.fecha)}
@@ -1584,6 +1939,114 @@ export default function CuentasAjustadasPage() {
         </div>
       )}
 
+      {/* Import Progress Modal */}
+      {showImportProgressModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+          <div className="absolute inset-0 bg-black/50"></div>
+          <div className="relative w-full max-w-lg rounded-2xl bg-white shadow-2xl p-8">
+            <div className="text-center space-y-6">
+              {/* Icon */}
+              <div className="mx-auto w-16 h-16 rounded-full bg-emerald-100 flex items-center justify-center">
+                {importProgressState.current >= importProgressState.total && importProgressState.total > 0 ? (
+                  <i className="ri-check-line text-3xl text-emerald-600 w-8 h-8 flex items-center justify-center"></i>
+                ) : (
+                  <i className="ri-loader-4-line animate-spin text-3xl text-emerald-600 w-8 h-8 flex items-center justify-center"></i>
+                )}
+              </div>
+
+              {/* Title */}
+              <div>
+                <h3 className="text-xl font-bold text-slate-900">
+                  {importProgressState.current >= importProgressState.total && importProgressState.total > 0
+                    ? '¡Importación Completada!'
+                    : 'Importando Asientos'}
+                </h3>
+                <p className="text-sm text-slate-500 mt-1">{importProgressState.etapa}</p>
+              </div>
+
+              {/* Progress bar */}
+              <div className="space-y-2">
+                <div className="w-full h-4 bg-slate-100 rounded-full overflow-hidden">
+                  <div
+                    className="h-full bg-emerald-500 rounded-full transition-all duration-500 ease-out"
+                    style={{
+                      width: importProgressState.total > 0
+                        ? `${Math.round((importProgressState.current / importProgressState.total) * 100)}%`
+                        : '0%',
+                    }}
+                  />
+                </div>
+                <p className="text-sm font-semibold text-slate-700 tabular-nums">
+                  {importProgressState.current.toLocaleString('es-CR')} de {importProgressState.total.toLocaleString('es-CR')} registros
+                </p>
+                <p className="text-xs text-slate-400">
+                  {importProgressState.total > 0
+                    ? `${Math.round((importProgressState.current / importProgressState.total) * 100)}% completado`
+                    : 'Preparando...'}
+                </p>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* GYP Year Picker Modal */}
+      {showGypModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+          <div className="absolute inset-0 bg-black/50" onClick={() => setShowGypModal(false)} />
+          <div className="relative w-full max-w-sm rounded-xl bg-white shadow-2xl p-6">
+            <div className="flex items-center gap-3 mb-4">
+              <div className="w-10 h-10 rounded-full bg-sky-100 flex items-center justify-center shrink-0">
+                <i className="ri-calendar-line text-sky-600 w-5 h-5 flex items-center justify-center"></i>
+              </div>
+              <h3 className="text-lg font-semibold text-slate-900">Plantilla GYP Gerencial</h3>
+            </div>
+            <p className="text-sm text-slate-600 mb-4">
+              Seleccioná el rango de años. La plantilla incluirá los 12 meses de cada año como columnas.
+            </p>
+            <div className="flex items-center gap-3 mb-5">
+              <div className="flex-1">
+                <label className="block text-xs font-medium text-slate-700 mb-1">Año Inicio</label>
+                <input
+                  type="number"
+                  value={gypYearFrom}
+                  onChange={(e) => setGypYearFrom(Number(e.target.value))}
+                  className="w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-900 outline-none focus:border-sky-500 focus:ring-1 focus:ring-sky-500"
+                  min={2020}
+                  max={2040}
+                />
+              </div>
+              <div className="flex-1">
+                <label className="block text-xs font-medium text-slate-700 mb-1">Año Fin</label>
+                <input
+                  type="number"
+                  value={gypYearTo}
+                  onChange={(e) => setGypYearTo(Number(e.target.value))}
+                  className="w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-900 outline-none focus:border-sky-500 focus:ring-1 focus:ring-sky-500"
+                  min={2020}
+                  max={2040}
+                />
+              </div>
+            </div>
+            <div className="flex justify-end gap-3">
+              <button
+                onClick={() => setShowGypModal(false)}
+                className="rounded-lg px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-100 border border-slate-200 transition-colors cursor-pointer"
+              >
+                Cancelar
+              </button>
+              <button
+                onClick={handleDownloadGypTemplate}
+                className="rounded-lg px-4 py-2 text-sm font-semibold bg-sky-600 text-white hover:bg-sky-700 transition-colors cursor-pointer inline-flex items-center gap-1.5"
+              >
+                <i className="ri-download-line w-4 h-4 flex items-center justify-center"></i>
+                Descargar
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Asientos Preview Modal */}
       {previewOpen && (
         <AsientosPreviewModal
@@ -1607,7 +2070,6 @@ export default function CuentasAjustadasPage() {
             return dup;
           })()}
           missingCia={previewData.filter((r) => r.error?.includes('Sin compañía')).length}
-          loading={previewLoading}
           organizaciones={organizaciones}
           paises={paises}
           companias={companias}

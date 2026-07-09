@@ -120,6 +120,7 @@ export interface CuentaAjustada {
   descripcion_ajuste: string;
   tipo_saldo: 'acreedor' | 'deudor';
   ajuste: number;
+  ajuste_dolar: number;
   fecha: string | null;
   vista: string | null;
   categoria_padre: string | null;

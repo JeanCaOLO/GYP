@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, useCallback } from 'react';
+import { useEffect, useMemo, useState, useCallback, useRef } from 'react';
 import { supabase } from '@/lib/supabase';
 import type { CatalogoItem, Organizacion, Pais, Compania, CentroCosto } from '@/types';
 import { useAuth } from '@/contexts/AuthContext';
@@ -41,9 +41,13 @@ export default function CatalogoPage() {
     missingUbicacion: 0,
     paisCount: 0,
     orgCount: 0,
+    ccCount: 0,
     duplicates: 0,
   });
   const [toInsert, setToInsert] = useState<Record<string, unknown>[]>([]);
+  const [searchResults, setSearchResults] = useState<CatalogoItem[] | null>(null);
+  const [searchLoading, setSearchLoading] = useState(false);
+  const searchDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const { isAdmin, user } = useAuth();
   const { addToast } = useToast();
   const { organizaciones, paises, companias, centrosCostos, organizacionesMap, paisesMap, companiasMap, centrosCostosMap } = useUbicaciones();
@@ -58,16 +62,17 @@ export default function CatalogoPage() {
         .from('catalogo_gyp')
         .select('*');
       // Scope filter
-      if (!isSuperAdmin && userScope.pais_id) {
-        query = query.eq('pais_id', userScope.pais_id);
-      } else if (!isSuperAdmin && userScope.compania_id) {
+      if (!isSuperAdmin && userScope.compania_id) {
         query = query.eq('compania_id', userScope.compania_id);
+      } else if (!isSuperAdmin && userScope.pais_id) {
+        query = query.eq('pais_id', userScope.pais_id);
       } else if (!isSuperAdmin && userScope.organizacion_id) {
         query = query.eq('organizacion_id', userScope.organizacion_id);
       }
       const { data, error } = await query
+        .order('cuenta', { ascending: true })
         .order('orden_clasificacion', { ascending: true, nullsFirst: false })
-        .order('cuenta', { ascending: true });
+        .limit(5000);
       if (error) {
         console.error('Supabase error:', error);
         setError(error.message);
@@ -304,6 +309,7 @@ export default function CatalogoPage() {
       let paisCount = 0;
       let orgCount = 0;
       let duplicates = 0;
+      let ccCount = 0;
       const parsed: ImportPreviewRow[] = [];
       const batchToInsert: Record<string, unknown>[] = [];
       // Detección de duplicados DENTRO del lote
@@ -327,43 +333,40 @@ export default function CatalogoPage() {
         const clasificacion2 = String(getVal(row, 'Clasificacion 2', 'Clasificacion2', 'clasificacion_2', 'CLASIFICACION_2', 'Sub Clasificacion 2', 'Subclasificacion 2') || '').trim();
         const ordenRaw = getVal(row, 'Orden Clasificacion', 'OrdenClasificacion', 'orden_clasificacion', 'Orden', 'ORDEN', 'ORDER');
 
-        // Ubicación con matching ROBUSTO
+        // Ubicación con matching ROBUSTO (con contexto de país)
         const orgNombre = String(getVal(row, 'Organizacion', 'organizacion', 'ORGANIZACION', 'Org', 'ORG') || '').trim();
         const paisNombre = String(getVal(row, 'Pais', 'pais', 'PAIS', 'Country', 'COUNTRY') || '').trim();
         const ciaNombre = String(getVal(row, 'Compania', 'compania', 'COMPANIA', 'Cia', 'CIA', 'Company', 'COMPANY') || '').trim();
         const ccNombre = String(getVal(row, 'Centro Costo', 'CentroCosto', 'centro_costo', 'CENTRO_COSTO', 'CC', 'cc', 'Cost Center', 'COSTCENTER') || '').trim();
 
+        // 1. Matching de Organización y País (sin dependencia)
         const orgMatch = findEntity(orgNombre, organizaciones);
         const paisMatch = findEntity(paisNombre, paises);
-        let ciaMatch = findEntity(ciaNombre, companias);
-        const ccMatch = findEntity(ccNombre, centrosCostos);
 
-        // Si no encontró compañía por matching directo, intentar inferirla del contexto
-        if (!ciaMatch && ciaNombre) {
-          // Intentar buscar el nombre de compañía dentro del nombre de centro de costo
-          if (ccNombre) {
-            for (const c of companias) {
-              if (
-                normalizeText(ccNombre).includes(normalizeText(c.nombre)) ||
-                normalizeText(ccNombre).includes(normalizeText(c.codigo))
-              ) {
-                ciaMatch = c;
-                break;
-              }
-            }
-          }
-          // Si sigue sin encontrar, intentar por el país (compañías que pertenecen a ese país)
-          if (!ciaMatch && paisMatch) {
-            ciaMatch = companias.find(
-              (c) => (c as Compania).pais_id === paisMatch.id && normalizeText(c.nombre) === normalizeText(ciaNombre),
-            ) || null;
-            if (!ciaMatch) {
-              ciaMatch = companias.find(
-                (c) => (c as Compania).pais_id === paisMatch.id && normalizeText(c.nombre).includes(normalizeText(ciaNombre)),
-              ) || null;
+        // 2. Matching de Compañía — scoped por país si ya lo encontramos
+        let ciaMatch = paisMatch
+          ? findEntity(ciaNombre, companias.filter((c) => c.pais_id === paisMatch.id))
+          : null;
+        if (!ciaMatch) ciaMatch = findEntity(ciaNombre, companias);
+
+        // Si sigue sin encontrar compañía, intentar inferir del nombre de centro de costo
+        if (!ciaMatch && ciaNombre && ccNombre) {
+          for (const c of companias) {
+            if (
+              normalizeText(ccNombre).includes(normalizeText(c.nombre)) ||
+              normalizeText(ccNombre).includes(normalizeText(c.codigo))
+            ) {
+              ciaMatch = c;
+              break;
             }
           }
         }
+
+        // 3. Matching de Centro de Costo — scoped por país si ya lo encontramos
+        let ccMatch = paisMatch
+          ? findEntity(ccNombre, centrosCostos.filter((cc) => cc.pais_id === paisMatch.id))
+          : null;
+        if (!ccMatch) ccMatch = findEntity(ccNombre, centrosCostos);
 
         const orgId = orgMatch?.id || null;
         const paisId = paisMatch?.id || null;
@@ -374,8 +377,9 @@ export default function CatalogoPage() {
         if (paisNombre && !paisId) missingUbicacion++;
         if (paisId) paisCount++;
         if (orgId) orgCount++;
+        if (ccId) ccCount++;
 
-        // Validar: si tiene compañía en Excel pero no se encontró, marcamos error
+        // Validar: si tiene valores en Excel pero no se encontraron, marcamos error
         let rowError: string | null = null;
         let rowValido = true;
         const errores: string[] = [];
@@ -383,8 +387,14 @@ export default function CatalogoPage() {
         if (orgNombre && !orgId) errores.push(`Org "${orgNombre}" no encontrada`);
         if (paisNombre && !paisId) errores.push(`País "${paisNombre}" no encontrado`);
         if (!ciaNombre) errores.push('Compañía requerida');
-        else if (!ciaId) errores.push(`Cía "${ciaNombre}" no encontrada`);
-        if (ccNombre && !ccId) errores.push(`CC "${ccNombre}" no encontrado`);
+        else if (!ciaId) {
+          const ctxPais = paisMatch ? ` en ${paisMatch.nombre}` : '';
+          errores.push(`Cía "${ciaNombre}" no encontrada${ctxPais}`);
+        }
+        if (ccNombre && !ccId) {
+          const ctxPais = paisMatch ? ` en ${paisMatch.nombre}` : '';
+          errores.push(`CC "${ccNombre}" no encontrado${ctxPais}`);
+        }
 
         // Detectar duplicados DENTRO del lote (llave compuesta)
         const compositeKey = `${cuenta}||${orgId || 'NULL'}||${paisId || 'NULL'}||${ciaId || 'NULL'}`;
@@ -466,6 +476,7 @@ export default function CatalogoPage() {
         missingUbicacion,
         paisCount,
         orgCount,
+        ccCount,
         duplicates,
       });
       setToInsert(batchToInsert);
@@ -621,6 +632,60 @@ export default function CatalogoPage() {
     }
   };
 
+  const scopeCompaniaId = userScope?.compania_id ?? null;
+  const scopePaisId = userScope?.pais_id ?? null;
+  const scopeOrgId = userScope?.organizacion_id ?? null;
+
+  useEffect(() => {
+    // Cancelar debounce anterior
+    if (searchDebounceRef.current) {
+      clearTimeout(searchDebounceRef.current);
+    }
+    // Si no hay búsqueda, limpiar resultados
+    if (!search || !search.trim()) {
+      setSearchResults(null);
+      setSearchLoading(false);
+      return;
+    }
+    setSearchLoading(true);
+    searchDebounceRef.current = setTimeout(async () => {
+      try {
+        const term = search.trim();
+        let query = supabase
+          .from('catalogo_gyp')
+          .select('*')
+          .or(`cuenta.ilike.%${term}%,descripcion.ilike.%${term}%,clasificacion.ilike.%${term}%`);
+        // Scope filter
+        if (!isSuperAdmin && scopeCompaniaId) {
+          query = query.eq('compania_id', scopeCompaniaId);
+        } else if (!isSuperAdmin && scopePaisId) {
+          query = query.eq('pais_id', scopePaisId);
+        } else if (!isSuperAdmin && scopeOrgId) {
+          query = query.eq('organizacion_id', scopeOrgId);
+        }
+        const { data, error } = await query
+          .order('cuenta', { ascending: true })
+          .limit(500);
+        if (error) {
+          console.error('Search error:', error);
+          setSearchResults([]);
+        } else {
+          setSearchResults(data || []);
+        }
+      } catch (err) {
+        console.error('Search error:', err);
+        setSearchResults([]);
+      } finally {
+        setSearchLoading(false);
+      }
+    }, 300);
+    return () => {
+      if (searchDebounceRef.current) {
+        clearTimeout(searchDebounceRef.current);
+      }
+    };
+  }, [search, isSuperAdmin, scopeCompaniaId, scopePaisId, scopeOrgId]);
+
   return (
     <div className="space-y-6">
       {/* Header */}
@@ -693,7 +758,7 @@ export default function CatalogoPage() {
                 setSearch(e.target.value);
                 setPage(0);
               }}
-              placeholder="Buscar por cuenta, descripción o clasificación..."
+              placeholder="Buscar por cuenta, descripción o clasificación en todo el catálogo..."
               className="w-full rounded-lg border border-slate-200 bg-slate-50 py-2 pl-10 pr-4 text-sm text-slate-900 outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500"
             />
           </div>
@@ -811,6 +876,22 @@ export default function CatalogoPage() {
           </select>
         </div>
 
+        {/* Indicador de resultados de búsqueda */}
+        {search && search.trim() && searchResults !== null && !searchLoading && (
+          <div className="flex items-center gap-2 text-sm">
+            <span className="text-slate-500">
+              <strong className="text-slate-900">{searchResults.length}</strong> resultado{searchResults.length !== 1 ? 's' : ''} para "<span className="text-slate-700">{search}</span>"
+            </span>
+            <span className="text-xs text-emerald-600 bg-emerald-50 px-2 py-0.5 rounded-full">Búsqueda completa en BD</span>
+            <button
+              onClick={() => setSearch('')}
+              className="text-xs text-slate-400 hover:text-slate-600 underline ml-auto"
+            >
+              Limpiar
+            </button>
+          </div>
+        )}
+
         {/* Tabla */}
         <div className="overflow-x-auto">
           <table className="w-full text-sm">
@@ -839,7 +920,7 @@ export default function CatalogoPage() {
               {loading ? (
                 Array.from({ length: 8 }).map((_, i) => (
                   <tr key={i} className="border-b border-slate-100">
-                    {Array.from({ length: canWrite ? 15 : 14 }).map((_, j) => (
+                    {Array.from({ length: canWrite ? 17 : 16 }).map((_, j) => (
                       <td key={j} className="py-3 pr-4">
                         <div className="h-4 bg-slate-200 rounded animate-pulse w-20"></div>
                       </td>
@@ -874,6 +955,98 @@ export default function CatalogoPage() {
                     </div>
                   </td>
                 </tr>
+              ) : searchLoading ? (
+                <tr>
+                  <td colSpan={canWrite ? 17 : 16} className="py-12 text-center">
+                    <div className="flex flex-col items-center gap-3">
+                      <div className="w-8 h-8 border-2 border-emerald-500 border-t-transparent rounded-full animate-spin"></div>
+                      <p className="text-sm text-slate-500">Buscando en todo el catálogo...</p>
+                    </div>
+                  </td>
+                </tr>
+              ) : search && search.trim() && searchResults !== null && searchResults.length === 0 ? (
+                <tr>
+                  <td colSpan={canWrite ? 17 : 16} className="py-12 text-center">
+                    <div className="flex flex-col items-center gap-3">
+                      <div className="w-12 h-12 rounded-full bg-amber-100 flex items-center justify-center">
+                        <i className="ri-search-line text-amber-500 text-xl"></i>
+                      </div>
+                      <p className="text-sm font-medium text-slate-700">Sin resultados para "{search}"</p>
+                      <p className="text-xs text-slate-500">Intentá con otro término o revisá que la cuenta exista en la base</p>
+                      <button
+                        onClick={() => setSearch('')}
+                        className="rounded-lg px-4 py-2 text-sm font-medium bg-slate-100 text-slate-600 hover:bg-slate-200 transition-colors"
+                      >
+                        Limpiar búsqueda
+                      </button>
+                    </div>
+                  </td>
+                </tr>
+              ) : search && search.trim() && searchResults !== null ? (
+                searchResults.map((item) => (
+                  <tr key={item.id} className="border-b border-slate-100 hover:bg-slate-50">
+                    <td className="py-3 pr-4 text-slate-900 whitespace-nowrap">{item.linea ?? '-'}</td>
+                    <td className="py-3 pr-4 text-slate-900 whitespace-nowrap">{item.grupo ?? '-'}</td>
+                    <td className="py-3 pr-4 font-medium text-slate-900 whitespace-nowrap">{item.cuenta}</td>
+                    <td className="py-3 pr-4 text-slate-700 min-w-[200px]">{item.descripcion}</td>
+                    <td className="py-3 pr-4 text-slate-600 whitespace-nowrap">{item.saldo_normal || '-'}</td>
+                    <td className="py-3 pr-4 text-slate-600 whitespace-nowrap">{item.comercializadora || '-'}</td>
+                    <td className="py-3 pr-4 text-slate-600 whitespace-nowrap">{item.balance_gyp || '-'}</td>
+                    <td className="py-3 pr-4 text-slate-600 whitespace-nowrap">{item.clasificacion || '-'}</td>
+                    <td className="py-3 pr-4 text-slate-600 whitespace-nowrap">{item.clasificacion_1 || '-'}</td>
+                    <td className="py-3 pr-4 text-slate-600 whitespace-nowrap">{item.clasificacion_2 || '-'}</td>
+                    <td className="py-3 pr-4 text-slate-600 whitespace-nowrap">{item.orden_clasificacion ?? '-'}</td>
+                    <td className="py-3 pr-4 text-slate-600 whitespace-nowrap text-xs">
+                      {organizacionesMap.get(item.organizacion_id || '') || <span className="text-slate-400 italic">—</span>}
+                    </td>
+                    <td className="py-3 pr-4 text-slate-600 whitespace-nowrap text-xs">
+                      {paisesMap.get(item.pais_id || '') || <span className="text-slate-400 italic">—</span>}
+                    </td>
+                    <td className="py-3 pr-4 text-slate-600 whitespace-nowrap text-xs">
+                      {companiasMap.get(item.compania_id || '') || <span className="text-slate-400 italic">—</span>}
+                    </td>
+                    <td className="py-3 pr-4 text-slate-600 whitespace-nowrap text-xs">
+                      {centrosCostosMap.get(item.centro_costo_id || '') || <span className="text-slate-400 italic">—</span>}
+                    </td>
+                    <td className="py-3 pr-4 whitespace-nowrap">
+                      <button
+                        onClick={() => toggleActiva(item)}
+                        className={`inline-flex items-center gap-1 rounded-full px-2.5 py-0.5 text-xs font-medium transition-colors cursor-pointer ${
+                          item.activa
+                            ? 'bg-emerald-100 text-emerald-700 hover:bg-emerald-200'
+                            : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                        }`}
+                        title={item.activa ? 'Haz clic para desactivar' : 'Haz clic para activar'}
+                      >
+                        <span className={`w-1.5 h-1.5 rounded-full ${item.activa ? 'bg-emerald-500' : 'bg-slate-400'}`}></span>
+                        {item.activa ? 'Activa' : 'Inactiva'}
+                      </button>
+                    </td>
+                    {canWrite && (
+                      <td className="py-3 pr-4 whitespace-nowrap">
+                        <div className="flex gap-2">
+                          <button
+                            onClick={() => {
+                              setEditing(item);
+                              setModalOpen(true);
+                            }}
+                            className="rounded-md p-1.5 text-slate-500 hover:bg-slate-100 hover:text-slate-900"
+                            title="Editar"
+                          >
+                            <i className="ri-edit-line"></i>
+                          </button>
+                          <button
+                            onClick={() => setConfirmDelete(item)}
+                            className="rounded-md p-1.5 text-red-500 hover:bg-red-50"
+                            title="Eliminar"
+                          >
+                            <i className="ri-delete-bin-line"></i>
+                          </button>
+                        </div>
+                      </td>
+                    )}
+                  </tr>
+                ))
               ) : paginated.length === 0 ? (
                 <tr>
                   <td colSpan={canWrite ? 17 : 16} className="py-8 text-center text-slate-400">
@@ -951,7 +1124,7 @@ export default function CatalogoPage() {
         </div>
 
         {/* Paginación */}
-        {totalPages > 1 && (
+        {!search && !search.trim() && totalPages > 1 && (
           <div className="flex items-center justify-between flex-wrap gap-2">
             <p className="text-sm text-slate-500">
               Mostrando {page * PAGE_SIZE + 1} - {Math.min((page + 1) * PAGE_SIZE, filtered.length)} de {filtered.length}
@@ -1016,6 +1189,7 @@ export default function CatalogoPage() {
         missingUbicacion={previewStats.missingUbicacion}
         paisCount={previewStats.paisCount}
         orgCount={previewStats.orgCount}
+        ccCount={previewStats.ccCount}
         duplicates={previewStats.duplicates}
         loading={!!importProgress}
         paises={paises}

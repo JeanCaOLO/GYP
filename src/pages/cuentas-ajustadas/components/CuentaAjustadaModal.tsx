@@ -40,6 +40,7 @@ export default function CuentaAjustadaModal({
     descripcion_ajuste: item?.descripcion_ajuste || '',
     tipo_saldo: item?.tipo_saldo || 'acreedor',
     ajuste: item?.ajuste ?? 0,
+    ajuste_dolar: item?.ajuste_dolar ?? 0,
     fecha: item?.fecha || '',
     vista: item?.vista || '',
     categoria_padre: item?.categoria_padre || '',
@@ -260,9 +261,15 @@ export default function CuentaAjustadaModal({
           </div>
           <div className="grid grid-cols-2 gap-4">
             <div>
+              <label className="block text-sm font-medium text-slate-700 mb-1">Ajuste Dólar</label>
+              <input type="number" step="0.01" value={form.ajuste_dolar} onChange={(e) => setForm({ ...form, ajuste_dolar: Number(e.target.value) })} className="w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-900 outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500" placeholder="0.00" />
+            </div>
+            <div>
               <label className="block text-sm font-medium text-slate-700 mb-1">Fecha</label>
               <input type="date" value={form.fecha} onChange={(e) => setForm({ ...form, fecha: e.target.value })} className="w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-900 outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500" />
             </div>
+          </div>
+          <div className="grid grid-cols-2 gap-4">
             <div>
               <label className="block text-sm font-medium text-slate-700 mb-1">Vista</label>
               <select value={form.vista} onChange={(e) => setForm({ ...form, vista: e.target.value })} className="w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-900 outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500">

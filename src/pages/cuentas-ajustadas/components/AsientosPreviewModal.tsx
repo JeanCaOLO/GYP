@@ -33,7 +33,7 @@ interface AsientosPreviewModalProps {
   skipped: number;
   duplicates: number;
   missingCia: number;
-  loading: boolean;
+  loading?: boolean;
   organizaciones: Organizacion[];
   paises: Pais[];
   companias: Compania[];
