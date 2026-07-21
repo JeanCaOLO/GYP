@@ -223,6 +223,7 @@ export interface PresupuestoLinea {
   monto_local: number | null;
   monto_usd: number | null;
   descripcion_gyp: string | null;
+  vista: 'GYP' | 'GYP GERENCIAL' | 'AMBOS';
   activa: boolean;
   created_at: string;
   pais_id: string | null;

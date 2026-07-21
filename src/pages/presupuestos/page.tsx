@@ -334,6 +334,7 @@ function CargasTab({ onVerLineas }: { onVerLineas: (cargaId: string) => void }) 
         const batch = rows.slice(i, i + BATCH_SIZE).map((r) => ({
           ...r,
           carga_id: cargaId,
+          vista: 'AMBOS',
           organizacion_id: userOrgId,
           pais_id: userPaisId,
           compania_id: userCompId,
@@ -957,6 +958,7 @@ function LineasTab({ cargaFiltroExterno, onLimpiarFiltro }: { cargaFiltroExterno
                 <th className="py-3 pr-4 font-medium whitespace-nowrap">Monto USD</th>
                 <th className="py-3 pr-4 font-medium whitespace-nowrap">Org.</th>
                 <th className="py-3 pr-4 font-medium whitespace-nowrap">Cía.</th>
+                <th className="py-3 pr-4 font-medium whitespace-nowrap">Vista</th>
                 <th className="py-3 pr-4 font-medium whitespace-nowrap">Estado</th>
                 {canWriteLineas && <th className="py-3 pr-4 font-medium whitespace-nowrap">Acciones</th>}
               </tr>
@@ -965,14 +967,14 @@ function LineasTab({ cargaFiltroExterno, onLimpiarFiltro }: { cargaFiltroExterno
               {loading ? (
                 Array.from({ length: 8 }).map((_, i) => (
                   <tr key={i} className="border-b border-background-100">
-                    {Array.from({ length: canWriteLineas ? 12 : 11 }).map((_, j) => (
+                    {Array.from({ length: canWriteLineas ? 13 : 12 }).map((_, j) => (
                       <td key={j} className="py-3 pr-4"><div className="h-4 bg-background-200 rounded animate-pulse w-24"></div></td>
                     ))}
                   </tr>
                 ))
               ) : paginated.length === 0 ? (
                 <tr>
-                  <td colSpan={canWriteLineas ? 12 : 11} className="py-8 text-center text-foreground-600">
+                  <td colSpan={canWriteLineas ? 13 : 12} className="py-8 text-center text-foreground-600">
                     No se encontraron líneas de presupuesto
                   </td>
                 </tr>
@@ -1007,6 +1009,15 @@ function LineasTab({ cargaFiltroExterno, onLimpiarFiltro }: { cargaFiltroExterno
                       <td className="py-3 pr-4 text-foreground-700 whitespace-nowrap">{item.monto_usd != null ? formatCurrency(item.monto_usd) : '-'}</td>
                       <td className="py-3 pr-4 text-foreground-600 whitespace-nowrap text-xs">{organizacionesMap.get(item.organizacion_id || '') || <span className="text-foreground-400 italic">—</span>}</td>
                       <td className="py-3 pr-4 text-foreground-600 whitespace-nowrap text-xs">{companiasMap.get(item.compania_id || '') || <span className="text-foreground-400 italic">—</span>}</td>
+                      <td className="py-3 pr-4 whitespace-nowrap">
+                        <span className={`inline-flex rounded-full px-2.5 py-0.5 text-xs font-medium ${
+                          item.vista === 'GYP' ? 'bg-blue-100 text-blue-700' :
+                          item.vista === 'GYP GERENCIAL' ? 'bg-purple-100 text-purple-700' :
+                          'bg-secondary-100 text-secondary-700'
+                        }`}>
+                          {item.vista || 'AMBOS'}
+                        </span>
+                      </td>
                       <td className="py-3 pr-4 whitespace-nowrap">
                         <span className={`inline-flex rounded-full px-2.5 py-0.5 text-xs font-medium ${item.activa ? 'bg-emerald-100 text-emerald-700' : 'bg-background-100 text-foreground-700'}`}>
                           {item.activa ? 'Activa' : 'Inactiva'}
@@ -1118,6 +1129,7 @@ function LineaModal({
     monto: item?.monto || '',
     monto_local: item?.monto_local ?? '',
     monto_usd: item?.monto_usd ?? '',
+    vista: item?.vista || 'AMBOS',
     activa: item?.activa ?? true,
     organizacion_id: item?.organizacion_id || '',
     pais_id: item?.pais_id || '',
@@ -1218,6 +1230,18 @@ function LineaModal({
           <div className="flex items-center gap-2">
             <input type="checkbox" id="activa-linea" checked={form.activa} onChange={(e) => setForm({ ...form, activa: e.target.checked })} className="h-4 w-4 rounded border-slate-300 text-emerald-600 focus:ring-emerald-500" />
             <label htmlFor="activa-linea" className="text-sm text-slate-700">Activa</label>
+          </div>
+          <div>
+            <label className="block text-sm font-medium text-slate-700 mb-1">Vista</label>
+            <select
+              value={form.vista}
+              onChange={(e) => setForm({ ...form, vista: e.target.value })}
+              className="w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-900 outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500"
+            >
+              <option value="AMBOS">AMBOS</option>
+              <option value="GYP">GYP</option>
+              <option value="GYP GERENCIAL">GYP GERENCIAL</option>
+            </select>
           </div>
           <div className="grid grid-cols-2 gap-4">
             <div>
