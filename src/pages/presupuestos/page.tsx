@@ -721,20 +721,26 @@ function LineasTab({ cargaFiltroExterno, onLimpiarFiltro }: { cargaFiltroExterno
 
   const fetchData = useCallback(async () => {
     setLoading(true);
-    let lineasQuery = supabase.from('presupuestos_lineas').select('*');
-    if (!lisScope && luserScope.pais_id) lineasQuery = lineasQuery.eq('pais_id', luserScope.pais_id);
-    else if (!lisScope && luserScope.compania_id) lineasQuery = lineasQuery.eq('compania_id', luserScope.compania_id);
-    else if (!lisScope && luserScope.organizacion_id) lineasQuery = lineasQuery.eq('organizacion_id', luserScope.organizacion_id);
-    lineasQuery = lineasQuery.order('created_at', { ascending: false });
-    const [lineasRes, cargasRes, catRes] = await Promise.all([
-      lineasQuery,
-      supabase.from('presupuestos_cargas').select('id, nombre').eq('activa', true).order('created_at', { ascending: false }),
-      supabase.from('catalogo_gyp').select('id, cuenta, descripcion').eq('activa', true),
-    ]);
-    if (lineasRes.data) setLineas(lineasRes.data as PresupuestoLinea[]);
-    if (cargasRes.data) setCargas(cargasRes.data as PresupuestoCarga[]);
-    if (catRes.data) setCatalogoGyp(catRes.data as CatalogoItem[]);
-    setLoading(false);
+    try {
+      let lineasQuery = supabase.from('presupuestos_lineas').select('*');
+      if (!lisScope && luserScope.pais_id) lineasQuery = lineasQuery.eq('pais_id', luserScope.pais_id);
+      else if (!lisScope && luserScope.compania_id) lineasQuery = lineasQuery.eq('compania_id', luserScope.compania_id);
+      else if (!lisScope && luserScope.organizacion_id) lineasQuery = lineasQuery.eq('organizacion_id', luserScope.organizacion_id);
+      lineasQuery = lineasQuery.order('created_at', { ascending: false });
+      const [lineasRes, cargasRes, catRes] = await Promise.all([
+        lineasQuery,
+        supabase.from('presupuestos_cargas').select('id, nombre').eq('activa', true).order('created_at', { ascending: false }),
+        supabase.from('catalogo_gyp').select('id, cuenta, descripcion').eq('activa', true),
+      ]);
+      if (lineasRes.error) throw lineasRes.error;
+      if (lineasRes.data) setLineas(lineasRes.data as PresupuestoLinea[]);
+      if (cargasRes.data) setCargas(cargasRes.data as PresupuestoCarga[]);
+      if (catRes.data) setCatalogoGyp(catRes.data as CatalogoItem[]);
+    } catch (err) {
+      addToast('error', 'Error cargando líneas: ' + (err as Error).message);
+    } finally {
+      setLoading(false);
+    }
   }, []);
 
   useEffect(() => {
@@ -790,12 +796,26 @@ function LineasTab({ cargaFiltroExterno, onLimpiarFiltro }: { cargaFiltroExterno
 
   const handleSave = async (formData: Record<string, unknown>) => {
     try {
+      // Clean up: convert empty strings to null for nullable UUID/string fields
+      const cleanData: Record<string, unknown> = {};
+      for (const [key, value] of Object.entries(formData)) {
+        if (typeof value === 'string' && value.trim() === '' && key !== 'cuenta' && key !== 'carga_id') {
+          cleanData[key] = null;
+        } else if ((key === 'monto' || key === 'monto_local' || key === 'monto_usd') && typeof value === 'string') {
+          cleanData[key] = value === '' ? null : Number(value);
+        } else if (key === 'anio' || key === 'mes') {
+          cleanData[key] = typeof value === 'string' ? Number(value) : value;
+        } else {
+          cleanData[key] = value;
+        }
+      }
+
       if (editing) {
-        const { error } = await supabase.from('presupuestos_lineas').update(formData).eq('id', editing.id);
+        const { error } = await supabase.from('presupuestos_lineas').update(cleanData).eq('id', editing.id);
         if (error) throw error;
         addToast('success', 'Línea actualizada');
       } else {
-        const { error } = await supabase.from('presupuestos_lineas').insert(formData);
+        const { error } = await supabase.from('presupuestos_lineas').insert(cleanData);
         if (error) throw error;
         addToast('success', 'Línea creada');
       }
@@ -1124,12 +1144,12 @@ function LineaModal({
   const [form, setForm] = useState({
     carga_id: item?.carga_id || (cargas[0]?.id || ''),
     cuenta: item?.cuenta || '',
-    anio: item?.anio || new Date().getFullYear(),
-    mes: item?.mes || 1,
-    monto: item?.monto || '',
+    anio: item?.anio ?? new Date().getFullYear(),
+    mes: item?.mes ?? 1,
+    monto: item?.monto ?? '',
     monto_local: item?.monto_local ?? '',
     monto_usd: item?.monto_usd ?? '',
-    vista: item?.vista || 'AMBOS',
+    vista: item?.vista || 'GYP',
     activa: item?.activa ?? true,
     organizacion_id: item?.organizacion_id || '',
     pais_id: item?.pais_id || '',
@@ -1238,7 +1258,6 @@ function LineaModal({
               onChange={(e) => setForm({ ...form, vista: e.target.value })}
               className="w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-900 outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500"
             >
-              <option value="AMBOS">AMBOS</option>
               <option value="GYP">GYP</option>
               <option value="GYP GERENCIAL">GYP GERENCIAL</option>
             </select>
