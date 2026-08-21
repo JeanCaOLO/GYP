@@ -7,6 +7,7 @@ import { ConfirmModal } from '@/components/base/ConfirmModal';
 import { CatalogoModal } from '@/pages/catalogo/components/CatalogoModal';
 import ImportPreviewModal from '@/pages/catalogo/components/ImportPreviewModal';
 import type { ImportPreviewRow } from '@/pages/catalogo/components/ImportPreviewModal';
+import { BulkUpdateExcelModal } from '@/pages/catalogo/components/BulkUpdateExcelModal';
 import { useUbicaciones } from '@/hooks/useUbicaciones';
 import { usePermissions } from '@/hooks/usePermissions';
 
@@ -30,6 +31,7 @@ export default function CatalogoPage() {
   const [modalOpen, setModalOpen] = useState(false);
   const [editing, setEditing] = useState<CatalogoItem | null>(null);
   const [confirmDelete, setConfirmDelete] = useState<CatalogoItem | null>(null);
+  const [bulkUpdateOpen, setBulkUpdateOpen] = useState(false);
   const [importProgress, setImportProgress] = useState<string | null>(null);
   const [previewOpen, setPreviewOpen] = useState(false);
   const [previewData, setPreviewData] = useState<ImportPreviewRow[]>([]);
@@ -146,6 +148,9 @@ export default function CatalogoPage() {
         'Clasificacion',
         'Clasificacion 1',
         'Clasificacion 2',
+        'Clasificacion Combinado 1',
+        'Clasificacion Combinado 2',
+        'Clasificacion Combinado 3',
         'Orden Clasificacion',
         'Organizacion',
         'Pais',
@@ -164,6 +169,9 @@ export default function CatalogoPage() {
         'Gastos Operativos',
         'Gastos Varios',
         'Otros Gastos',
+        'Combinado 1',
+        'Combinado 2',
+        'Combinado 3',
         1,
         'OLO',
         'Colombia',
@@ -331,6 +339,9 @@ export default function CatalogoPage() {
         const clasificacion = String(getVal(row, 'Clasificacion', 'clasificacion', 'CLASIFICACION', 'Clase', 'CLASE', 'Categoria', 'CATEGORIA') || '').trim();
         const clasificacion1 = String(getVal(row, 'Clasificacion 1', 'Clasificacion1', 'clasificacion_1', 'CLASIFICACION_1', 'Sub Clasificacion', 'Subclasificacion') || '').trim();
         const clasificacion2 = String(getVal(row, 'Clasificacion 2', 'Clasificacion2', 'clasificacion_2', 'CLASIFICACION_2', 'Sub Clasificacion 2', 'Subclasificacion 2') || '').trim();
+        const clasificacionCombinado1 = String(getVal(row, 'Clasificacion Combinado 1', 'ClasificacionCombinado1', 'clasificacion_combinado_1', 'CLASIFICACION_COMBINADO_1', 'Combinado 1') || '').trim();
+        const clasificacionCombinado2 = String(getVal(row, 'Clasificacion Combinado 2', 'ClasificacionCombinado2', 'clasificacion_combinado_2', 'CLASIFICACION_COMBINADO_2', 'Combinado 2') || '').trim();
+        const clasificacionCombinado3 = String(getVal(row, 'Clasificacion Combinado 3', 'ClasificacionCombinado3', 'clasificacion_combinado_3', 'CLASIFICACION_COMBINADO_3', 'Combinado 3') || '').trim();
         const ordenRaw = getVal(row, 'Orden Clasificacion', 'OrdenClasificacion', 'orden_clasificacion', 'Orden', 'ORDEN', 'ORDER');
 
         // Ubicación con matching ROBUSTO (con contexto de país)
@@ -431,6 +442,9 @@ export default function CatalogoPage() {
           clasificacion,
           clasificacion_1: clasificacion1,
           clasificacion_2: clasificacion2,
+          clasificacion_combinado_1: clasificacionCombinado1,
+          clasificacion_combinado_2: clasificacionCombinado2,
+          clasificacion_combinado_3: clasificacionCombinado3,
           orden_clasificacion: safeNumber(ordenRaw),
           activa: true,
           ...(orgId ? { organizacion_id: orgId } : {}),
@@ -449,6 +463,9 @@ export default function CatalogoPage() {
           clasificacion,
           clasificacion_1: clasificacion1,
           clasificacion_2: clasificacion2,
+          clasificacion_combinado_1: clasificacionCombinado1,
+          clasificacion_combinado_2: clasificacionCombinado2,
+          clasificacion_combinado_3: clasificacionCombinado3,
           linea: safeNumber(lineaRaw),
           grupo: safeNumber(grupoRaw),
           saldo_normal: saldoNormal,
@@ -543,7 +560,7 @@ export default function CatalogoPage() {
 
         // Log historial: actualización
         const cambiosList: string[] = [];
-        const campos = ['linea', 'grupo', 'cuenta', 'descripcion', 'saldo_normal', 'comercializadora', 'balance_gyp', 'clasificacion', 'clasificacion_1', 'clasificacion_2', 'orden_clasificacion'];
+        const campos = ['linea', 'grupo', 'cuenta', 'descripcion', 'saldo_normal', 'comercializadora', 'balance_gyp', 'clasificacion', 'clasificacion_1', 'clasificacion_2', 'clasificacion_combinado_1', 'clasificacion_combinado_2', 'clasificacion_combinado_3', 'orden_clasificacion'];
         campos.forEach((campo) => {
           const oldVal = (editing as Record<string, unknown>)[campo];
           const newVal = formData[campo];
@@ -715,6 +732,13 @@ export default function CatalogoPage() {
                   disabled={!!importProgress}
                 />
               </label>
+              <button
+                onClick={() => setBulkUpdateOpen(true)}
+                className="inline-flex items-center gap-2 rounded-lg bg-slate-700 px-5 py-3 text-sm font-semibold text-white hover:bg-slate-800 active:scale-95 transition-all whitespace-nowrap cursor-pointer"
+              >
+                <i className="ri-edit-box-line w-5 h-5 flex items-center justify-center"></i>
+                Actualización Masiva
+              </button>
               <button
                 onClick={() => {
                   setEditing(null);
@@ -907,6 +931,9 @@ export default function CatalogoPage() {
                 <th className="py-3 pr-4 font-medium whitespace-nowrap">Clasificación</th>
                 <th className="py-3 pr-4 font-medium whitespace-nowrap">Clasificación 1</th>
                 <th className="py-3 pr-4 font-medium whitespace-nowrap">Clasificación 2</th>
+                <th className="py-3 pr-4 font-medium whitespace-nowrap">Clasificación Combinado 1</th>
+                <th className="py-3 pr-4 font-medium whitespace-nowrap">Clasificación Combinado 2</th>
+                <th className="py-3 pr-4 font-medium whitespace-nowrap">Clasificación Combinado 3</th>
                 <th className="py-3 pr-4 font-medium whitespace-nowrap">Orden</th>
                 <th className="py-3 pr-4 font-medium whitespace-nowrap">Org.</th>
                 <th className="py-3 pr-4 font-medium whitespace-nowrap">País</th>
@@ -920,7 +947,7 @@ export default function CatalogoPage() {
               {loading ? (
                 Array.from({ length: 8 }).map((_, i) => (
                   <tr key={i} className="border-b border-slate-100">
-                    {Array.from({ length: canWrite ? 17 : 16 }).map((_, j) => (
+                    {Array.from({ length: canWrite ? 20 : 19 }).map((_, j) => (
                       <td key={j} className="py-3 pr-4">
                         <div className="h-4 bg-slate-200 rounded animate-pulse w-20"></div>
                       </td>
@@ -929,7 +956,7 @@ export default function CatalogoPage() {
                 ))
               ) : error ? (
                 <tr>
-                  <td colSpan={canWrite ? 17 : 16} className="py-12">
+                  <td colSpan={canWrite ? 20 : 19} className="py-12">
                     <div className="flex flex-col items-center text-center gap-3">
                       <div className="w-12 h-12 rounded-full bg-red-100 flex items-center justify-center">
                         <i className="ri-error-warning-line text-red-500 text-xl"></i>
@@ -957,7 +984,7 @@ export default function CatalogoPage() {
                 </tr>
               ) : searchLoading ? (
                 <tr>
-                  <td colSpan={canWrite ? 17 : 16} className="py-12 text-center">
+                  <td colSpan={canWrite ? 20 : 19} className="py-12 text-center">
                     <div className="flex flex-col items-center gap-3">
                       <div className="w-8 h-8 border-2 border-emerald-500 border-t-transparent rounded-full animate-spin"></div>
                       <p className="text-sm text-slate-500">Buscando en todo el catálogo...</p>
@@ -966,7 +993,7 @@ export default function CatalogoPage() {
                 </tr>
               ) : search && search.trim() && searchResults !== null && searchResults.length === 0 ? (
                 <tr>
-                  <td colSpan={canWrite ? 17 : 16} className="py-12 text-center">
+                  <td colSpan={canWrite ? 20 : 19} className="py-12 text-center">
                     <div className="flex flex-col items-center gap-3">
                       <div className="w-12 h-12 rounded-full bg-amber-100 flex items-center justify-center">
                         <i className="ri-search-line text-amber-500 text-xl"></i>
@@ -995,6 +1022,9 @@ export default function CatalogoPage() {
                     <td className="py-3 pr-4 text-slate-600 whitespace-nowrap">{item.clasificacion || '-'}</td>
                     <td className="py-3 pr-4 text-slate-600 whitespace-nowrap">{item.clasificacion_1 || '-'}</td>
                     <td className="py-3 pr-4 text-slate-600 whitespace-nowrap">{item.clasificacion_2 || '-'}</td>
+                    <td className="py-3 pr-4 text-slate-600 whitespace-nowrap">{item.clasificacion_combinado_1 || '-'}</td>
+                    <td className="py-3 pr-4 text-slate-600 whitespace-nowrap">{item.clasificacion_combinado_2 || '-'}</td>
+                    <td className="py-3 pr-4 text-slate-600 whitespace-nowrap">{item.clasificacion_combinado_3 || '-'}</td>
                     <td className="py-3 pr-4 text-slate-600 whitespace-nowrap">{item.orden_clasificacion ?? '-'}</td>
                     <td className="py-3 pr-4 text-slate-600 whitespace-nowrap text-xs">
                       {organizacionesMap.get(item.organizacion_id || '') || <span className="text-slate-400 italic">—</span>}
@@ -1049,7 +1079,7 @@ export default function CatalogoPage() {
                 ))
               ) : paginated.length === 0 ? (
                 <tr>
-                  <td colSpan={canWrite ? 17 : 16} className="py-8 text-center text-slate-400">
+                  <td colSpan={canWrite ? 20 : 19} className="py-8 text-center text-slate-400">
                     No se encontraron resultados
                   </td>
                 </tr>
@@ -1066,6 +1096,9 @@ export default function CatalogoPage() {
                     <td className="py-3 pr-4 text-slate-600 whitespace-nowrap">{item.clasificacion || '-'}</td>
                     <td className="py-3 pr-4 text-slate-600 whitespace-nowrap">{item.clasificacion_1 || '-'}</td>
                     <td className="py-3 pr-4 text-slate-600 whitespace-nowrap">{item.clasificacion_2 || '-'}</td>
+                    <td className="py-3 pr-4 text-slate-600 whitespace-nowrap">{item.clasificacion_combinado_1 || '-'}</td>
+                    <td className="py-3 pr-4 text-slate-600 whitespace-nowrap">{item.clasificacion_combinado_2 || '-'}</td>
+                    <td className="py-3 pr-4 text-slate-600 whitespace-nowrap">{item.clasificacion_combinado_3 || '-'}</td>
                     <td className="py-3 pr-4 text-slate-600 whitespace-nowrap">{item.orden_clasificacion ?? '-'}</td>
                     <td className="py-3 pr-4 text-slate-600 whitespace-nowrap text-xs">
                       {organizacionesMap.get(item.organizacion_id || '') || <span className="text-slate-400 italic">—</span>}
@@ -1164,6 +1197,17 @@ export default function CatalogoPage() {
           setEditing(null);
         }}
         onSave={handleSave}
+      />
+
+      <BulkUpdateExcelModal
+        isOpen={bulkUpdateOpen}
+        items={items}
+        organizaciones={organizaciones}
+        paises={paises}
+        companias={companias}
+        centrosCostos={centrosCostos}
+        onClose={() => setBulkUpdateOpen(false)}
+        onComplete={fetchData}
       />
 
       <ConfirmModal

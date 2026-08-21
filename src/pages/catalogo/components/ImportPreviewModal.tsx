@@ -7,6 +7,9 @@ interface ImportPreviewRow {
   clasificacion: string;
   clasificacion_1: string;
   clasificacion_2: string;
+  clasificacion_combinado_1: string;
+  clasificacion_combinado_2: string;
+  clasificacion_combinado_3: string;
   linea: number | null;
   grupo: number | null;
   saldo_normal: string;
@@ -143,6 +146,9 @@ export default function ImportPreviewModal({
                   <th className="text-left py-2 px-3 font-medium text-slate-600 whitespace-nowrap">Clasificación</th>
                   <th className="text-left py-2 px-3 font-medium text-slate-600 whitespace-nowrap">Clasif. 1</th>
                   <th className="text-left py-2 px-3 font-medium text-slate-600 whitespace-nowrap">Clasif. 2</th>
+                  <th className="text-left py-2 px-3 font-medium text-slate-600 whitespace-nowrap">Comb. 1</th>
+                  <th className="text-left py-2 px-3 font-medium text-slate-600 whitespace-nowrap">Comb. 2</th>
+                  <th className="text-left py-2 px-3 font-medium text-slate-600 whitespace-nowrap">Comb. 3</th>
                   <th className="text-left py-2 px-3 font-medium text-slate-600 whitespace-nowrap">País</th>
                   <th className="text-left py-2 px-3 font-medium text-slate-600 whitespace-nowrap">Org.</th>
                   <th className="text-left py-2 px-3 font-medium text-slate-600 whitespace-nowrap">Cía.</th>
@@ -162,6 +168,9 @@ export default function ImportPreviewModal({
                     <td className="py-2 px-3 text-slate-600 whitespace-nowrap">{row.clasificacion || '-'}</td>
                     <td className="py-2 px-3 text-slate-600 whitespace-nowrap">{row.clasificacion_1 || '-'}</td>
                     <td className="py-2 px-3 text-slate-600 whitespace-nowrap">{row.clasificacion_2 || '-'}</td>
+                    <td className="py-2 px-3 text-slate-600 whitespace-nowrap">{row.clasificacion_combinado_1 || '-'}</td>
+                    <td className="py-2 px-3 text-slate-600 whitespace-nowrap">{row.clasificacion_combinado_2 || '-'}</td>
+                    <td className="py-2 px-3 text-slate-600 whitespace-nowrap">{row.clasificacion_combinado_3 || '-'}</td>
                     <td className="py-2 px-3 whitespace-nowrap">
                       {row.pais_id ? (
                         <span className="inline-flex items-center gap-1 rounded-full bg-emerald-100 px-2 py-0.5 text-xs text-emerald-700">

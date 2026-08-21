@@ -45,6 +45,7 @@ export default function CuentasAjustadasPage() {
   const [filtroPais, setFiltroPais] = useState('');
   const [filtroCompania, setFiltroCompania] = useState('');
   const [filtroCentroCosto, setFiltroCentroCosto] = useState('');
+  const [filtroAnio, setFiltroAnio] = useState(ANIO_DEFAULT);
   const [page, setPage] = useState(0);
   const [modalOpen, setModalOpen] = useState(false);
   const [editing, setEditing] = useState<CuentaAjustada | null>(null);
@@ -901,9 +902,9 @@ export default function CuentasAjustadasPage() {
       });
       if (error) throw error;
 
-      // Guardar el total sumado del año actual en la columna ajuste de cuentas_ajustadas
+      // Guardar el total sumado del año seleccionado en la columna ajuste de cuentas_ajustadas
       const sumaTotal = montos
-        .filter((m) => m.anio === ANIO_DEFAULT)
+        .filter((m) => m.anio === filtroAnio)
         .reduce((acc, m) => acc + m.monto, 0);
       const { error: updateError } = await supabase
         .from('cuentas_ajustadas')
@@ -1129,22 +1130,22 @@ export default function CuentasAjustadasPage() {
     return total;
   };
 
-  const getTotalCategoria = (categoria: string) => {
+  const getTotalCategoria = (categoria: string, anio: number = filtroAnio) => {
     let total = 0;
     gerencialCuentas
       .filter((c) => c.categoria_padre === categoria && !c.es_cuenta_padre)
       .forEach((c) => {
-        total += getTotalCuenta(c.id);
+        total += getTotalCuenta(c.id, anio);
       });
     return total;
   };
 
-  const getTotalCategoriaMes = (categoria: string, mes: number) => {
+  const getTotalCategoriaMes = (categoria: string, mes: number, anio: number = filtroAnio) => {
     let total = 0;
     gerencialCuentas
       .filter((c) => c.categoria_padre === categoria && !c.es_cuenta_padre)
       .forEach((c) => {
-        total += getMontoMes(c.id, mes);
+        total += getMontoMes(c.id, mes, anio);
       });
     return total;
   };
@@ -1321,6 +1322,21 @@ export default function CuentasAjustadasPage() {
               <option key={c.id} value={c.id}>{c.nombre}</option>
             ))}
           </select>
+          <div className="relative">
+            <i className="ri-calendar-line absolute left-3 top-1/2 -translate-y-1/2 text-foreground-700 w-5 h-5 flex items-center justify-center pointer-events-none"></i>
+            <select
+              value={filtroAnio}
+              onChange={(e) => { setFiltroAnio(Number(e.target.value)); setPage(0); }}
+              className="appearance-none rounded-lg border border-background-200 bg-background-100 py-2 pl-10 pr-8 text-sm text-foreground-950 outline-none focus:border-primary-500 focus:ring-1 focus:ring-primary-500 cursor-pointer min-w-[140px]"
+            >
+              <option value={2024}>2024</option>
+              <option value={2025}>2025</option>
+              <option value={2026}>2026</option>
+              <option value={2027}>2027</option>
+              <option value={2028}>2028</option>
+            </select>
+            <i className="ri-arrow-down-s-line absolute right-2 top-1/2 -translate-y-1/2 text-foreground-700 w-4 h-4 flex items-center justify-center pointer-events-none"></i>
+          </div>
           <div className="flex gap-2 ml-auto">
             {canWrite && (
               <>
@@ -1423,7 +1439,7 @@ export default function CuentasAjustadasPage() {
                   <th className="py-3 pr-4 font-medium whitespace-nowrap text-xs">Cía.</th>
                   <th className="py-3 pr-4 font-medium whitespace-nowrap text-xs">CC</th>
                   {MESES_LABELS.map((mes) => (
-                    <th key={mes} className="py-3 pr-3 font-medium whitespace-nowrap text-right">{mes}-{String(ANIO_DEFAULT).slice(-2)}</th>
+                    <th key={mes} className="py-3 pr-3 font-medium whitespace-nowrap text-right">{mes}-{String(filtroAnio).slice(-2)}</th>
                   ))}
                   <th className="py-3 pr-3 font-medium whitespace-nowrap text-right">Total</th>
                   <th className="py-3 pr-3 font-medium whitespace-nowrap text-right">Aj. Dólar</th>
@@ -1487,7 +1503,7 @@ export default function CuentasAjustadasPage() {
                             </td>
                             {MESES_LABELS.map((_, idx) => {
                               const mes = idx + 1;
-                              const monto = getMontoMes(item.id, mes);
+                              const monto = getMontoMes(item.id, mes, filtroAnio);
                               return (
                                 <td key={mes} className={`py-2 pr-3 whitespace-nowrap text-right ${monto === 0 ? 'text-foreground-400' : 'text-foreground-950 font-medium'}`}>
                                   {monto === 0 ? '—' : formatNumero(monto)}
@@ -1495,7 +1511,7 @@ export default function CuentasAjustadasPage() {
                               );
                             })}
                             <td className="py-2 pr-3 whitespace-nowrap text-right font-bold text-foreground-950">
-                              {formatNumero(getTotalCuenta(item.id))}
+                              {formatNumero(getTotalCuenta(item.id, filtroAnio))}
                             </td>
                             <td className="py-2 pr-3 whitespace-nowrap text-right font-medium text-foreground-950">
                               {formatNumero2(item.ajuste_dolar ?? 0)}
@@ -1552,7 +1568,7 @@ export default function CuentasAjustadasPage() {
                             </td>
                             {MESES_LABELS.map((_, idx) => {
                               const mes = idx + 1;
-                              const monto = getMontoMes(cuentaPadre.id, mes);
+                              const monto = getMontoMes(cuentaPadre.id, mes, filtroAnio);
                               return (
                                 <td key={mes} className="py-2 pr-3 whitespace-nowrap text-right font-bold text-foreground-950">
                                   {monto === 0 ? '—' : formatNumero(monto)}
@@ -1560,7 +1576,7 @@ export default function CuentasAjustadasPage() {
                               );
                             })}
                             <td className="py-2 pr-3 whitespace-nowrap text-right font-bold text-foreground-950">
-                              {formatNumero(getTotalCuenta(cuentaPadre.id))}
+                              {formatNumero(getTotalCuenta(cuentaPadre.id, filtroAnio))}
                             </td>
                             <td className="py-2 pr-3 whitespace-nowrap text-right font-bold text-foreground-950">
                               {formatNumero2(cuentaPadre.ajuste_dolar ?? 0)}
@@ -1607,7 +1623,7 @@ export default function CuentasAjustadasPage() {
                             <td className="py-2 pr-4"></td>
                             {MESES_LABELS.map((_, idx) => {
                               const mes = idx + 1;
-                              const total = getTotalCategoriaMes(categoria, mes);
+                              const total = getTotalCategoriaMes(categoria, mes, filtroAnio);
                               return (
                                 <td key={mes} className="py-2 pr-3 whitespace-nowrap text-right font-bold text-foreground-700">
                                   {total === 0 ? '—' : formatNumero(total)}
@@ -1615,7 +1631,7 @@ export default function CuentasAjustadasPage() {
                               );
                             })}
                             <td className="py-2 pr-3 whitespace-nowrap text-right font-bold text-foreground-950">
-                              {formatNumero(getTotalCategoria(categoria))}
+                              {formatNumero(getTotalCategoria(categoria, filtroAnio))}
                             </td>
                             <td className="py-2 pr-3"></td>
                             <td className="py-2 pr-4"></td>
@@ -1646,7 +1662,7 @@ export default function CuentasAjustadasPage() {
                     </td>
                     {MESES_LABELS.map((_, idx) => {
                       const mes = idx + 1;
-                      const monto = getMontoMes(item.id, mes);
+                      const monto = getMontoMes(item.id, mes, filtroAnio);
                       return (
                         <td key={mes} className={`py-2 pr-3 whitespace-nowrap text-right ${monto === 0 ? 'text-foreground-400' : 'text-foreground-950 font-medium'}`}>
                           {monto === 0 ? '—' : formatNumero(monto)}
@@ -1654,7 +1670,7 @@ export default function CuentasAjustadasPage() {
                       );
                     })}
                     <td className="py-2 pr-3 whitespace-nowrap text-right font-bold text-foreground-950">
-                      {formatNumero(getTotalCuenta(item.id))}
+                      {formatNumero(getTotalCuenta(item.id, filtroAnio))}
                     </td>
                     <td className="py-2 pr-3 whitespace-nowrap text-right font-medium text-foreground-950">
                       {formatNumero2(item.ajuste_dolar ?? 0)}
@@ -1786,7 +1802,7 @@ export default function CuentasAjustadasPage() {
                           </td>
                           <td className="py-3 pr-4 whitespace-nowrap font-medium text-foreground-950">
                             {item.vista === 'GYP Gerencial'
-                              ? formatNumero2(getTotalCuenta(item.id))
+                              ? formatNumero2(getTotalCuenta(item.id, filtroAnio))
                               : formatNumero2(item.ajuste)}
                           </td>
                           <td className="py-3 pr-4 whitespace-nowrap font-medium text-foreground-950">

@@ -72,6 +72,9 @@ export interface CatalogoItem {
   clasificacion: string | null;
   clasificacion_1: string | null;
   clasificacion_2: string | null;
+  clasificacion_combinado_1: string | null;
+  clasificacion_combinado_2: string | null;
+  clasificacion_combinado_3: string | null;
   orden_clasificacion: number | null;
   activa: boolean;
   created_at: string;

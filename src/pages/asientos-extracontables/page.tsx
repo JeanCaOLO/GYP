@@ -54,6 +54,7 @@ export default function AsientosExtracontablesPage() {
   const [expandedCarga, setExpandedCarga] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
+  const [yearFilter, setYearFilter] = useState('');
   const [page, setPage] = useState(0);
   const [previewOpen, setPreviewOpen] = useState(false);
   const [previewData, setPreviewData] = useState<AsientosPreviewRow[]>([]);
@@ -151,6 +152,13 @@ export default function AsientosExtracontablesPage() {
         (c.descripcion && c.descripcion.toLowerCase().includes(q)),
     );
   }, [cargas, search]);
+
+  const filterLineasByYear = (list: AsientoLinea[]) => {
+    if (!yearFilter) return list;
+    return list.filter((l) => l.fecha && l.fecha.substring(0, 4) === yearFilter);
+  };
+
+  const YEAR_OPTIONS = ['2024', '2025', '2026', '2027', '2028'];
 
   const totalPages = Math.ceil(filtered.length / PAGE_SIZE);
   const paginated = filtered.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE);
@@ -827,15 +835,31 @@ export default function AsientosExtracontablesPage() {
 
       {/* Search + Lista de Cargas */}
       <div className="rounded-xl bg-white p-4 border border-slate-200 space-y-4">
-        <div className="relative max-w-md">
-          <i className="ri-search-line absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 w-5 h-5 flex items-center justify-center"></i>
-          <input
-            type="text"
-            value={search}
-            onChange={(e) => { setSearch(e.target.value); setPage(0); }}
-            placeholder="Buscar carga por nombre o descripción..."
-            className="w-full rounded-lg border border-slate-200 bg-slate-50 py-2 pl-10 pr-4 text-sm text-slate-900 outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500"
-          />
+        <div className="flex flex-wrap items-center gap-3">
+          <div className="relative max-w-md flex-1 min-w-[220px]">
+            <i className="ri-search-line absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 w-5 h-5 flex items-center justify-center"></i>
+            <input
+              type="text"
+              value={search}
+              onChange={(e) => { setSearch(e.target.value); setPage(0); }}
+              placeholder="Buscar carga por nombre o descripción..."
+              className="w-full rounded-lg border border-slate-200 bg-slate-50 py-2 pl-10 pr-4 text-sm text-slate-900 outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500"
+            />
+          </div>
+          <div className="relative">
+            <i className="ri-calendar-line absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 w-5 h-5 flex items-center justify-center pointer-events-none"></i>
+            <select
+              value={yearFilter}
+              onChange={(e) => setYearFilter(e.target.value)}
+              className="appearance-none rounded-lg border border-slate-200 bg-slate-50 py-2 pl-10 pr-8 text-sm text-slate-900 outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 cursor-pointer"
+            >
+              <option value="">Todos los años</option>
+              {YEAR_OPTIONS.map((y) => (
+                <option key={y} value={y}>{y}</option>
+              ))}
+            </select>
+            <i className="ri-arrow-down-s-line absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 w-4 h-4 flex items-center justify-center pointer-events-none"></i>
+          </div>
         </div>
 
         {loading ? (
@@ -934,12 +958,12 @@ export default function AsientosExtracontablesPage() {
                                 Cargando líneas...
                               </td>
                             </tr>
-                          ) : (lineas.get(carga.id) || []).length === 0 ? (
+                          ) : filterLineasByYear(lineas.get(carga.id) || []).length === 0 ? (
                             <tr>
-                              <td colSpan={17} className="py-4 text-center text-slate-400">Sin líneas</td>
+                              <td colSpan={17} className="py-4 text-center text-slate-400">{yearFilter ? `Sin líneas del año ${yearFilter}` : 'Sin líneas'}</td>
                             </tr>
                           ) : (
-                            (lineas.get(carga.id) || []).map((linea) => (
+                            filterLineasByYear(lineas.get(carga.id) || []).map((linea) => (
                               <tr key={linea.id} className="border-t border-slate-100 hover:bg-slate-50">
                                 <td className="py-2 px-3 text-slate-900 font-mono text-xs font-medium whitespace-nowrap">{linea.cuenta_contable}</td>
                                 <td className="py-2 px-3 text-slate-700 whitespace-nowrap">{linea.asiento || '—'}</td>

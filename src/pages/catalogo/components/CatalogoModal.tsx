@@ -24,6 +24,9 @@ const initialForm = {
   clasificacion: '',
   clasificacion_1: '',
   clasificacion_2: '',
+  clasificacion_combinado_1: '',
+  clasificacion_combinado_2: '',
+  clasificacion_combinado_3: '',
   orden_clasificacion: '',
   activa: true,
   organizacion_id: '',
@@ -53,6 +56,9 @@ export function CatalogoModal({ isOpen, item, organizaciones, paises, companias,
           clasificacion: item.clasificacion ?? '',
           clasificacion_1: item.clasificacion_1 ?? '',
           clasificacion_2: item.clasificacion_2 ?? '',
+          clasificacion_combinado_1: item.clasificacion_combinado_1 ?? '',
+          clasificacion_combinado_2: item.clasificacion_combinado_2 ?? '',
+          clasificacion_combinado_3: item.clasificacion_combinado_3 ?? '',
           orden_clasificacion: item.orden_clasificacion ?? '',
           activa: item.activa,
           organizacion_id: item.organizacion_id ?? '',
@@ -101,6 +107,9 @@ export function CatalogoModal({ isOpen, item, organizaciones, paises, companias,
     if (form.clasificacion.trim()) payload.clasificacion = form.clasificacion.trim();
     if (form.clasificacion_1.trim()) payload.clasificacion_1 = form.clasificacion_1.trim();
     if (form.clasificacion_2.trim()) payload.clasificacion_2 = form.clasificacion_2.trim();
+    if (form.clasificacion_combinado_1.trim()) payload.clasificacion_combinado_1 = form.clasificacion_combinado_1.trim();
+    if (form.clasificacion_combinado_2.trim()) payload.clasificacion_combinado_2 = form.clasificacion_combinado_2.trim();
+    if (form.clasificacion_combinado_3.trim()) payload.clasificacion_combinado_3 = form.clasificacion_combinado_3.trim();
     if (form.orden_clasificacion !== '') payload.orden_clasificacion = Number(form.orden_clasificacion);
     if (form.organizacion_id) payload.organizacion_id = form.organizacion_id;
     if (form.pais_id) payload.pais_id = form.pais_id;
@@ -244,6 +253,39 @@ export function CatalogoModal({ isOpen, item, organizaciones, paises, companias,
             onChange={(e) => handleChange('clasificacion_2', e.target.value)}
             className={inputClass('clasificacion_2')}
             placeholder="Otros Gastos"
+          />
+        </div>
+
+        <div>
+          <label className="block text-sm font-medium text-slate-700 mb-1">Clasificación Combinado 1</label>
+          <input
+            type="text"
+            value={form.clasificacion_combinado_1}
+            onChange={(e) => handleChange('clasificacion_combinado_1', e.target.value)}
+            className={inputClass('clasificacion_combinado_1')}
+            placeholder="Combinado 1"
+          />
+        </div>
+
+        <div>
+          <label className="block text-sm font-medium text-slate-700 mb-1">Clasificación Combinado 2</label>
+          <input
+            type="text"
+            value={form.clasificacion_combinado_2}
+            onChange={(e) => handleChange('clasificacion_combinado_2', e.target.value)}
+            className={inputClass('clasificacion_combinado_2')}
+            placeholder="Combinado 2"
+          />
+        </div>
+
+        <div>
+          <label className="block text-sm font-medium text-slate-700 mb-1">Clasificación Combinado 3</label>
+          <input
+            type="text"
+            value={form.clasificacion_combinado_3}
+            onChange={(e) => handleChange('clasificacion_combinado_3', e.target.value)}
+            className={inputClass('clasificacion_combinado_3')}
+            placeholder="Combinado 3"
           />
         </div>
 
