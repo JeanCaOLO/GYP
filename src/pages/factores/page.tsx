@@ -1276,7 +1276,15 @@ function FactorModal({ item, tiposExistentes, organizaciones, paises, companias,
   const handleSave = () => {
     const tipoFinal = tipoInput.trim();
     if (!tipoFinal || form.valor <= 0 || !form.fecha) return;
-    onSave({ ...form, tipo: tipoFinal });
+    onSave({
+      ...form,
+      tipo: tipoFinal,
+      descripcion: form.descripcion || null,
+      organizacion_id: form.organizacion_id || null,
+      pais_id: form.pais_id || null,
+      compania_id: form.compania_id || null,
+      centro_costo_id: form.centro_costo_id || null,
+    });
   };
 
   return (
