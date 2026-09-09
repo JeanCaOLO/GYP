@@ -12,7 +12,11 @@ export default function PowerBiPage() {
     if (loading) return;
     setLoading(true);
     try {
-      await fetch(POWER_BI_REFRESH_URL, { method: 'POST', mode: 'no-cors' });
+      const minWait = new Promise((resolve) => setTimeout(resolve, 5 * 60 * 1000));
+      await Promise.all([
+        fetch(POWER_BI_REFRESH_URL, { method: 'POST', mode: 'no-cors' }).catch(() => null),
+        minWait,
+      ]);
       addToast('success', 'Solicitud de refresco enviada. Power BI se está actualizando.');
     } catch {
       addToast('error', 'No se pudo enviar la solicitud. Intentá de nuevo.');
@@ -52,7 +56,7 @@ export default function PowerBiPage() {
             {loading ? (
               <>
                 <i className="ri-loader-4-line animate-spin text-2xl w-6 h-6 flex items-center justify-center"></i>
-                Refrescando...
+                Actualizando...
               </>
             ) : (
               <>
@@ -64,7 +68,7 @@ export default function PowerBiPage() {
 
           {loading && (
             <p className="text-xs text-foreground-600">
-              Enviando solicitud al flujo de Power Automate...
+              Actualizando el modelo semántico, esto puede tardar unos minutos...
             </p>
           )}
         </div>
