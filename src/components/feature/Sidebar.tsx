@@ -20,6 +20,7 @@ const allNavItems: NavItem[] = [
   { path: '/activacion-cuentas', label: 'Activación de Cuentas', icon: 'ri-toggle-line', module: 'activacion-cuentas' },
   { path: '/factores', label: 'Tasas', icon: 'ri-line-chart-line', module: 'factores' },
   { path: '/historial-cambios', label: 'Historial', icon: 'ri-history-line', module: 'historial-cambios' },
+  { path: '/power-bi', label: 'Power BI', icon: 'ri-bar-chart-2-line', module: 'power-bi' },
 ];
 
 export function Sidebar() {
